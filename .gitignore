@@ -1,0 +1,17 @@
+# Python 缓存
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# 敏感文件
+.env
+*.pem
+*.json
+cloudflared-*.log
+
+# 项目大文件
+static/uploads/*
+*.png
+*.jpg

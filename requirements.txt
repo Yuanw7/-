@@ -1,0 +1,31 @@
+# Core Framework
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+
+# Zhipu AI (智谱AI)
+zhipuai>=2.1.0
+
+# LangGraph
+langgraph>=0.2.0
+
+# Vector Database
+chromadb>=0.4.22
+
+# PDF Parsing
+pypdf>=4.0.0
+
+# Data Validation
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+
+# Tunnel Manager
+colorama>=0.4.6
+
+# Utilities
+python-dotenv>=1.0.0
+Pillow>=10.2.0
+
+# Development
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

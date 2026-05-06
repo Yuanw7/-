@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>建筑合规审查 Agent</title>
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Noto Sans SC + JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Noto Sans SC"', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
+          colors: {
+            primary:  '#1A3A5C',
+            accent:   '#2E7D6B',
+            'accent-light': '#E8F5F1',
+            'warn':   '#C0392B',
+            'warn-light': '#FDECEA',
+          },
+          backdropBlur: { glass: '16px' },
+        },
+      },
+    }
+  </script>
+
+  <style>
+    /* ── Background ─────────────────────────────────────────────────── */
+    body {
+      background: linear-gradient(135deg, #0d1b2a 0%, #1b3a5c 45%, #0d3d38 100%);
+      min-height: 100vh;
+      font-family: 'Noto Sans SC', sans-serif;
+    }
+
+    /* ── Glassmorphism card ───────────────────────────────────────── */
+    .glass-card {
+      background: rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+    }
+
+    /* ── Drag zone ────────────────────────────────────────────────── */
+    .drop-zone {
+      border: 2px dashed rgba(46, 125, 107, 0.6);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      cursor: pointer;
+    }
+    .drop-zone.drag-over {
+      border-color: #2E7D6B;
+      background: rgba(46, 125, 107, 0.12);
+      transform: scale(1.015);
+      box-shadow: 0 0 24px rgba(46, 125, 107, 0.35);
+    }
+
+    /* ── Upload area pulse ────────────────────────────────────────── */
+    @keyframes pulse-ring {
+      0%   { box-shadow: 0 0 0 0 rgba(46, 125, 107, 0.5); }
+      70%  { box-shadow: 0 0 0 18px rgba(46, 125, 107, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(46, 125, 107, 0); }
+    }
+    .upload-pulse {
+      animation: pulse-ring 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+
+    /* ── Progress bar ─────────────────────────────────────────────── */
+    @keyframes progress-stripe {
+      from { background-position: 40px 0; }
+      to   { background-position: 0 0; }
+    }
+    .progress-bar {
+      background-image: linear-gradient(
+        135deg,
+        rgba(255,255,255,0.15) 25%,
+        transparent 25%,
+        transparent 50%,
+        rgba(255,255,255,0.15) 50%,
+        rgba(255,255,255,0.15) 75%,
+        transparent 75%,
+        transparent
+      );
+      background-size: 40px 40px;
+      animation: progress-stripe 1s linear infinite;
+    }
+
+    /* ── Fade in results ──────────────────────────────────────────── */
+    @keyframes fadeSlideUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .result-card {
+      animation: fadeSlideUp 0.5s ease-out forwards;
+    }
+
+    /* ── Badge ───────────────────────────────────────────────────── */
+    .badge-approved  { background:#E8F5F1; color:#1B6B52; border:1px solid #A7D7C5; }
+    .badge-rejected  { background:#FDECEA; color:#B03A2E; border:1px solid #E8A09A; }
+    .badge-pending   { background:#EBF2FA; color:#1A3A5C; border:1px solid #A8C1DA; }
+
+    /* ── Scrollbar ───────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 3px; }
+
+    /* ── Markdown code blocks ─────────────────────────────────────── */
+    pre { white-space: pre-wrap; word-break: break-all; }
+  </style>
+</head>
+
+<body class="text-white">
+
+  <!-- ── Header ─────────────────────────────────────────────────── -->
+  <header class="glass-card mx-auto max-w-3xl mt-8 px-6 py-4 flex items-center gap-4">
+    <div class="text-3xl">🏗️</div>
+    <div>
+      <h1 class="text-xl font-bold text-white leading-tight">建筑合规审查 Agent</h1>
+      <p class="text-xs text-blue-200 opacity-80">基于 GB 50016 · GB 50222 · GB 50352 · GB 50763 标准 · 适老化房间安全分析</p>
+    </div>
+    <div class="ml-auto flex items-center gap-2">
+      <div id="statusDot" class="w-2.5 h-2.5 rounded-full bg-gray-500 transition-colors duration-500"></div>
+      <span id="statusText" class="text-xs text-blue-200">后端未连接</span>
+    </div>
+  </header>
+
+  <!-- ── Main ───────────────────────────────────────────────────── -->
+  <main class="max-w-3xl mx-auto px-4 pb-16">
+
+    <!-- Upload Card -->
+    <div class="glass-card mt-6 p-8 rounded-2xl">
+      <h2 class="text-sm font-semibold text-blue-200 uppercase tracking-widest mb-6">📤 上传房间照片</h2>
+
+      <!-- Drop Zone -->
+      <div id="dropZone"
+           class="drop-zone rounded-xl p-10 flex flex-col items-center justify-center gap-4 text-center select-none">
+        <div class="upload-pulse w-16 h-16 rounded-full bg-accent/20 flex items-center justify-center">
+          <svg id="iconUpload" xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+          </svg>
+        </div>
+        <div>
+          <p class="text-white/80 font-medium">拖拽图片到这里，或 <span class="text-accent underline cursor-pointer" onclick="document.getElementById('fileInput').click()">点击上传</span></p>
+          <p class="text-xs text-white/40 mt-1">支持 JPG · PNG · WebP，最大 10MB</p>
+        </div>
+        <input type="file" id="fileInput" accept="image/jpeg,image/png,image/webp" class="hidden" />
+      </div>
+
+      <!-- Preview Thumb -->
+      <div id="previewWrap" class="hidden mt-4 flex items-center gap-4 p-4 rounded-xl bg-white/5">
+        <img id="thumbImg" class="w-20 h-20 object-cover rounded-lg border border-white/20" />
+        <div class="flex-1 min-w-0">
+          <p id="fileName" class="text-sm text-white/80 truncate font-medium"></p>
+          <p id="fileSize" class="text-xs text-white/40 mt-0.5"></p>
+        </div>
+        <button onclick="clearFile()" class="text-white/40 hover:text-red-400 transition-colors p-1">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Analyze Button -->
+      <button id="btnAnalyze"
+              onclick="analyze()"
+              disabled
+              class="mt-5 w-full py-3 rounded-xl bg-accent hover:bg-accent/90 disabled:bg-white/10 disabled:text-white/30 text-white font-semibold text-sm tracking-wide transition-all duration-200 flex items-center justify-center gap-2">
+        <span>🔍 开始分析</span>
+      </button>
+    </div>
+
+    <!-- Progress Card (hidden by default) -->
+    <div id="progressCard" class="glass-card mt-5 p-8 rounded-2xl hidden">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="animate-spin w-5 h-5 border-2 border-accent border-t-transparent rounded-full"></div>
+        <span id="progressLabel" class="text-sm text-blue-200 font-medium">正在上传图片...</span>
+      </div>
+      <div class="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+        <div id="progressBar" class="h-full bg-accent progress-bar rounded-full transition-all duration-500" style="width:0%"></div>
+      </div>
+      <p id="progressSub" class="text-xs text-white/40 mt-3">请稍候，首次分析需要构建知识库...</p>
+    </div>
+
+    <!-- Results Card -->
+    <div id="resultsCard" class="hidden mt-5 space-y-4">
+
+      <!-- Summary Row -->
+      <div class="glass-card p-6 rounded-2xl result-card" style="animation-delay:0s">
+        <div class="grid grid-cols-3 gap-4 text-center">
+          <div>
+            <div id="badgeStatus" class="badge-pending inline-block px-4 py-1 rounded-full text-xs font-bold"></div>
+            <p class="text-xs text-white/40 mt-2">审核结果</p>
+          </div>
+          <div>
+            <div id="scoreValue" class="text-2xl font-bold text-white">—</div>
+            <p class="text-xs text-white/40">安全评分 /100</p>
+          </div>
+          <div>
+            <div id="furnitureCount" class="text-2xl font-bold text-white">—</div>
+            <p class="text-xs text-white/40">检测家具</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab Bar -->
+      <div class="glass-card rounded-2xl overflow-hidden result-card" style="animation-delay:0.1s">
+        <div class="flex border-b border-white/10">
+          <button class="tab-btn active flex-1 py-3 text-xs font-semibold text-center transition-colors" data-tab="report">📋 安全报告</button>
+          <button class="tab-btn flex-1 py-3 text-xs font-semibold text-center transition-colors" data-tab="blueprint">🗺️ 2D蓝图</button>
+          <button class="tab-btn flex-1 py-3 text-xs font-semibold text-center transition-colors" data-tab="changes">🔄 变更清单</button>
+          <button class="tab-btn flex-1 py-3 text-xs font-semibold text-center transition-colors" data-tab="elder">🪑 适老化建议</button>
+        </div>
+
+        <!-- Tab: Safety Report -->
+        <div id="tab-report" class="tab-content p-6">
+          <h3 class="text-sm font-semibold text-blue-200 mb-4">安全报告</h3>
+          <div id="safetyReport" class="text-sm text-white/80 leading-relaxed space-y-3"></div>
+          <div class="mt-6 pt-4 border-t border-white/10">
+            <h4 class="text-xs font-semibold text-blue-200 mb-2">用户友好建议</h4>
+            <div id="userFriendly" class="text-sm text-white/70 leading-relaxed whitespace-pre-line"></div>
+          </div>
+        </div>
+
+        <!-- Tab: Blueprint -->
+        <div id="tab-blueprint" class="tab-content p-6 hidden">
+          <h3 class="text-sm font-semibold text-blue-200 mb-4">2D 房间蓝图 (俯视图)</h3>
+          <div id="blueprintMd" class="text-sm text-white/80 leading-relaxed"></div>
+          <div class="mt-4 overflow-x-auto">
+            <table id="blueprintTable" class="w-full text-xs text-white/80 border-collapse hidden">
+              <thead>
+                <tr id="blueprintHead" class="bg-primary/60"></tr>
+              </thead>
+              <tbody id="blueprintBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Tab: Changes -->
+        <div id="tab-changes" class="tab-content p-6 hidden">
+          <h3 class="text-sm font-semibold text-blue-200 mb-4">结构化变更清单</h3>
+          <div id="strictFormula" class="space-y-4"></div>
+        </div>
+
+        <!-- Tab: Elder Suggestions -->
+        <div id="tab-elder" class="tab-content p-6 hidden">
+          <h3 class="text-sm font-semibold text-blue-200 mb-4">适老化详细建议</h3>
+          <div id="elderSuggestions" class="text-sm text-white/80 leading-relaxed space-y-2"></div>
+        </div>
+      </div>
+
+      <!-- Blender Script -->
+      <div class="glass-card p-6 rounded-2xl result-card" style="animation-delay:0.2s">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-sm font-semibold text-blue-200">🧱 Blender 3D 重建脚本</h3>
+          <button onclick="downloadBlender()" class="text-xs text-accent hover:text-accent/80 flex items-center gap-1 transition-colors">
+            ⬇️ 下载脚本
+          </button>
+        </div>
+        <pre id="blenderScript" class="text-xs font-mono text-white/70 bg-black/30 rounded-xl p-4 overflow-x-auto max-h-72"></pre>
+      </div>
+
+      <!-- Raw JSON -->
+      <details class="glass-card rounded-2xl result-card" style="animation-delay:0.3s">
+        <summary class="cursor-pointer text-xs text-white/40 hover:text-white/70 transition-colors p-4">📄 查看完整 API 原始响应 (JSON)</summary>
+        <div class="px-4 pb-4">
+          <pre id="rawJson" class="text-xs font-mono text-white/60 bg-black/20 rounded-xl p-4 overflow-x-auto max-h-96"></pre>
+        </div>
+      </details>
+
+    </div><!-- /resultsCard -->
+  </main>
+
+  <!-- ── Footer ───────────────────────────────────────────────── -->
+  <footer class="text-center text-xs text-white/30 pb-8">
+    建筑合规审查 Agent · GB 50016/50222/50352/50763 · Powered by 智谱 GLM-4 + LangGraph
+  </footer>
+
+  <!-- ── Toast ─────────────────────────────────────────────────── -->
+  <div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-xl glass-card text-sm hidden transition-all duration-300">
+    <span id="toastMsg"></span>
+  </div>
+
+  <!-- ── Main JS ──────────────────────────────────────────────── -->
+  <script>
+    /* ── State ──────────────────────────────────────────────────── */
+    let currentFile = null;
+    let analysisResult = null;
+    let backendOk = false;
+
+    /* ── API base — relative path, adapts to any tunnel URL ────── */
+    const API = (path) => path;
+
+    /* ── Backend health check ──────────────────────────────────── */
+    (async () => {
+      try {
+        const r = await fetch(API('/health'));
+        if (r.ok) {
+          const dot = document.getElementById('statusDot');
+          dot.className = 'w-2.5 h-2.5 rounded-full bg-green-400';
+          document.getElementById('statusText').textContent = '后端在线';
+          backendOk = true;
+        }
+      } catch (_) {
+        dotAndText();
+      }
+    })();
+    function dotAndText() {
+      const dot = document.getElementById('statusDot');
+      dot.className = 'w-2.5 h-2.5 rounded-full bg-red-400';
+      document.getElementById('statusText').textContent = '后端离线';
+      backendOk = false;
+    }
+
+    /* ── Toast ─────────────────────────────────────────────────── */
+    let toastTimer;
+    function showToast(msg, duration = 3000) {
+      const el = document.getElementById('toast');
+      document.getElementById('toastMsg').textContent = msg;
+      el.classList.remove('hidden');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.add('hidden'), duration);
+    }
+
+    /* ── File input ────────────────────────────────────────────── */
+    const dropZone   = document.getElementById('dropZone');
+    const fileInput  = document.getElementById('fileInput');
+    const previewWrap = document.getElementById('previewWrap');
+    const thumbImg   = document.getElementById('thumbImg');
+    const fileNameEl = document.getElementById('fileName');
+    const fileSizeEl = document.getElementById('fileSize');
+    const btnAnalyze = document.getElementById('btnAnalyze');
+
+    fileInput.addEventListener('change', () => pickFile(fileInput.files[0]));
+
+    dropZone.addEventListener('dragover', e => {
+      e.preventDefault();
+      dropZone.classList.add('drag-over');
+    });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      const f = e.dataTransfer.files[0];
+      if (f) pickFile(f);
+    });
+
+    function pickFile(file) {
+      if (!file) return;
+      const valid = ['image/jpeg','image/png','image/webp'];
+      if (!valid.includes(file.type)) {
+        showToast('不支持的图片格式，请上传 JPG / PNG / WebP', 4000);
+        return;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        showToast('文件超过 10MB 限制', 4000);
+        return;
+      }
+      currentFile = file;
+      const url = URL.createObjectURL(file);
+      thumbImg.src = url;
+      fileNameEl.textContent = file.name;
+      fileSizeEl.textContent = (file.size / 1024).toFixed(1) + ' KB';
+      previewWrap.classList.remove('hidden');
+      btnAnalyze.disabled = false;
+    }
+
+    function clearFile() {
+      currentFile = null;
+      previewWrap.classList.add('hidden');
+      btnAnalyze.disabled = true;
+      fileInput.value = '';
+    }
+
+    /* ── Progress UI ────────────────────────────────────────────── */
+    function showProgress(step, pct, sub = '') {
+      document.getElementById('progressCard').classList.remove('hidden');
+      document.getElementById('progressLabel').textContent = step;
+      document.getElementById('progressBar').style.width = pct + '%';
+      if (sub) document.getElementById('progressSub').textContent = sub;
+    }
+    function hideProgress() {
+      document.getElementById('progressCard').classList.add('hidden');
+    }
+
+    /* ── Analyze ────────────────────────────────────────────────── */
+    async function analyze() {
+      if (!currentFile || !backendOk) {
+        showToast('后端未连接，请刷新重试');
+        return;
+      }
+      document.getElementById('resultsCard').classList.add('hidden');
+
+      showProgress('⏫ 正在上传图片...', 15);
+      const formData = new FormData();
+      formData.append('file', currentFile);
+
+      try {
+        showProgress('🤖 GLM-4 视觉分析中...', 35, '正在识别家具布局与尺寸...');
+        const resp = await fetch(API('/analyze-room'), {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (resp.status === 413) { showToast('文件超过 10MB 限制'); hideProgress(); return; }
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+          showToast('分析失败: ' + err.detail);
+          hideProgress();
+          return;
+        }
+
+        showProgress('🏛️ Agent 安全审查中...', 60, '对照 GB 标准检索知识库...');
+        showProgress('📝 生成结构化报告...', 80, '正在输出蓝图与建议...');
+
+        analysisResult = await resp.json();
+        showProgress('✅ 分析完成', 100);
+        setTimeout(() => {
+          hideProgress();
+          renderResults(analysisResult);
+        }, 600);
+
+      } catch (e) {
+        hideProgress();
+        showToast('请求失败: ' + e.message);
+        dotAndText();
+      }
+    }
+
+    /* ── Render Results ──────────────────────────────────────────── */
+    function renderResults(r) {
+      const status = r.status || 'UNKNOWN';
+      const badge = document.getElementById('badgeStatus');
+      badge.textContent = status;
+      badge.className = {
+        APPROVED: 'badge-approved inline-block px-4 py-1 rounded-full text-xs font-bold',
+        REJECTED: 'badge-rejected inline-block px-4 py-1 rounded-full text-xs font-bold',
+      }[status] || 'badge-pending inline-block px-4 py-1 rounded-full text-xs font-bold';
+
+      // Safety score
+      const reportMd = r.safety_report_markdown || '';
+      const scoreMatch = reportMd.match(/Safety Score[:\s]*\*\*?(\d+\.?\d*)/);
+      const score = scoreMatch ? parseFloat(scoreMatch[1]) : 0;
+      document.getElementById('scoreValue').textContent = score.toFixed(0);
+      document.getElementById('scoreValue').style.color = score >= 80 ? '#2E7D6B' : score >= 60 ? '#F39C12' : '#C0392B';
+
+      // Furniture count
+      document.getElementById('furnitureCount').textContent =
+        (r.room_scene?.furniture?.length ?? 0);
+
+      // Safety report markdown
+      document.getElementById('safetyReport').innerHTML = mdToHtml(reportMd);
+      document.getElementById('userFriendly').textContent = r.user_friendly_suggestions_text || '';
+
+      // Blueprint
+      const bpMd = r.blueprint_2d_markdown || '';
+      document.getElementById('blueprintMd').innerHTML = mdToHtml(bpMd);
+      parseBlueprintTable(bpMd);
+
+      // Strict formula
+      renderStrictFormula(r.strict_change_formula || {});
+
+      // Elder suggestions
+      document.getElementById('elderSuggestions').innerHTML =
+        mdToHtml(r.elder_redesign_suggestions_markdown || '');
+
+      // Blender script
+      document.getElementById('blenderScript').textContent = r.blender_script || '';
+
+      // Raw JSON
+      document.getElementById('rawJson').textContent = JSON.stringify(r, null, 2);
+
+      // Show
+      document.getElementById('resultsCard').classList.remove('hidden');
+      document.getElementById('resultsCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    /* ── Markdown → HTML (subset) ────────────────────────────────── */
+    function mdToHtml(md) {
+      if (!md) return '';
+      return md
+        .replace(/^### (.+)$/gm, '<h3 class="text-xs font-semibold text-blue-200 mt-4 mb-2">$1</h3>')
+        .replace(/^## (.+)$/gm, '<h2 class="text-sm font-semibold text-blue-200 mt-5 mb-2">$1</h2>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong class="text-white font-semibold">$1</strong>')
+        .replace(/`([^`]+)`/g, '<code class="font-mono text-accent bg-black/20 px-1.5 py-0.5 rounded">$1</code>')
+        .replace(/^- (.+)$/gm, '<li class="ml-4 list-disc text-white/70">$1</li>')
+        .replace(/\n\n/g, '</p><p class="text-white/70">')
+        .replace(/\n/g, '<br>');
+    }
+
+    /* ── Blueprint table ────────────────────────────────────────── */
+    function parseBlueprintTable(md) {
+      const table = document.getElementById('blueprintTable');
+      const thead = document.getElementById('blueprintHead');
+      const tbody = document.getElementById('blueprintBody');
+      thead.innerHTML = '';
+      tbody.innerHTML = '';
+
+      const lines = md.split('\n');
+      let inBody = false;
+      for (const line of lines) {
+        if (!line.startsWith('|')) continue;
+        if (line.includes('---')) { inBody = true; continue; }
+        const cells = line.trim().split('|').filter(c => c.trim());
+        const tr = document.createElement('tr');
+        tr.className = 'border-b border-white/10';
+        if (!inBody) {
+          cells.forEach(c => {
+            const th = document.createElement('th');
+            th.className = 'py-2 px-3 text-left text-blue-200 font-semibold text-xs';
+            th.textContent = c.trim();
+            thead.appendChild(th);
+          });
+        } else {
+          cells.forEach(c => {
+            const td = document.createElement('td');
+            td.className = 'py-2 px-3 text-white/70 text-xs';
+            td.textContent = c.trim();
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        }
+      }
+      table.classList.toggle('hidden', !tbody.children.length);
+    }
+
+    /* ── Strict formula ──────────────────────────────────────────── */
+    function renderStrictFormula(formula) {
+      const el = document.getElementById('strictFormula');
+      el.innerHTML = '';
+
+      const goal = formula.program_goal || '—';
+      const floor = formula.floor_texture?.suggestion || '—';
+
+      // Program goal + floor
+      const summary = document.createElement('div');
+      summary.className = 'grid grid-cols-2 gap-3 mb-4';
+      summary.innerHTML = `
+        <div class="bg-white/5 rounded-xl p-3">
+          <p class="text-xs text-white/40 mb-1">设计目标</p>
+          <p class="text-sm text-white/80">${goal}</p>
+        </div>
+        <div class="bg-white/5 rounded-xl p-3">
+          <p class="text-xs text-white/40 mb-1">地面材质建议</p>
+          <p class="text-sm text-white/80">${floor}</p>
+        </div>
+      `;
+      el.appendChild(summary);
+
+      // Changes
+      const changes = formula.changes_required || [];
+      if (!changes.length) {
+        el.innerHTML += '<p class="text-sm text-white/50">✅ 当前布局无需强制变更</p>';
+        return;
+      }
+      changes.forEach((ch, i) => {
+        const card = document.createElement('div');
+        card.className = 'bg-white/5 rounded-xl p-4';
+        const params = ch.what_to_change || {};
+        let paramsHtml = '';
+        if (typeof params === 'object') {
+          paramsHtml = Object.entries(params).map(([k,v]) =>
+            `<span class="font-mono text-xs text-accent">${k}</span>: <span class="text-white/70">${v}</span>`
+          ).join('<br>');
+        }
+        card.innerHTML = `
+          <div class="flex items-center gap-2 mb-2">
+            <span class="w-6 h-6 rounded-full bg-accent/30 text-accent text-xs flex items-center justify-center font-bold">${i+1}</span>
+            <span class="font-semibold text-sm text-white">${ch.target || '—'}</span>
+            <span class="text-xs text-white/40 font-mono ml-2">${ch.action || ''}</span>
+          </div>
+          <div class="ml-8 space-y-1 text-xs text-white/60">
+            ${paramsHtml}
+          </div>
+          ${ch.short_reason ? `<p class="mt-2 text-xs text-white/40 italic ml-8">原因: ${ch.short_reason}</p>` : ''}
+          ${ch.grounding?.rule_id ? `<p class="mt-1 text-xs text-blue-300/60 ml-8">📖 依据: ${ch.grounding.rule_id} · ${ch.grounding.source_file} p.${ch.grounding.page_number}</p>` : ''}
+        `;
+        el.appendChild(card);
+      });
+    }
+
+    /* ── Tab switching ───────────────────────────────────────────── */
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active','text-accent','border-b-2','border-accent'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+        btn.classList.add('active','text-accent','border-b-2','border-accent');
+        document.getElementById('tab-' + btn.dataset.tab)?.classList.remove('hidden');
+      });
+    });
+    // Activate first tab style
+    document.querySelector('.tab-btn.active')?.classList.add('text-accent','border-b-2','border-accent');
+
+    /* ── Download Blender script ────────────────────────────────── */
+    function downloadBlender() {
+      const code = analysisResult?.blender_script;
+      if (!code) return;
+      const blob = new Blob([code], { type: 'text/x-python' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'room_scene_generator.py';
+      a.click();
+    }
+  </script>
+</body>
+</html>
