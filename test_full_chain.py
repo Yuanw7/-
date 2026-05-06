@@ -83,7 +83,8 @@ def step1_connectivity(base_url: str, image_path: Path) -> dict[str, Any] | None
 
     try:
         with open(image_path, "rb") as f:
-            files = {"file": (image_path.name, f, "image/jpeg")}
+            # New API: files=List[UploadFile] (same key, multiple files)
+            files = [("files", (image_path.name, f, "image/jpeg"))]
             t0 = time.perf_counter()
             resp = requests.post(
                 f"{base_url}/analyze-room",

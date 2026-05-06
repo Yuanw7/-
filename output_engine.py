@@ -1,4 +1,11 @@
-"""输出生成器 — 适老化房间安全合规审查报告、2D 俯视图与 Blender 脚本。"""
+"""输出生成器 — 适老化房间安全合规审查报告、2D 俯视图与 Blender 脚本。
+
+【设计原则 — 去技术化】
+- 所有坐标、旋转角度等数值必须翻译成口语化描述
+- 每条建议都要解释"对老人有什么具体好处"
+- 禁止出现 x/y/z、move/rotate、JSON 参数等技术术语
+- 规范引用必须使用全称，禁止显示 .pdf 或 chunk_index 等后台字样
+"""
 
 from __future__ import annotations
 
@@ -7,6 +14,124 @@ from typing import Any, Sequence
 
 from knowledge_base import SafetyConstraintResult
 from models import ModificationProposal, RoomScene
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 口语化距离转换表
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _meters_to_words(meters: float) -> str:
+    """将米制距离转换为口语化描述。"""
+    if meters < 0.1:
+        return "一拳头宽"
+    elif meters < 0.2:
+        return "一个手机宽"
+    elif meters < 0.3:
+        return "一拃长"
+    elif meters < 0.5:
+        return "约半米"
+    elif meters < 0.8:
+        return "约一大步"
+    elif meters < 1.0:
+        return "约一步"
+    elif meters < 1.2:
+        return "够一个人侧身走"
+    elif meters < 1.5:
+        return "够一个人正常走"
+    elif meters < 1.8:
+        return "够两个人并排走"
+    else:
+        return f"约 {meters:.1f} 米宽"
+
+
+def _size_to_words(width: float, depth: float, height: float | None = None) -> str:
+    """将尺寸转换为口语化描述。"""
+    size_desc = f"{_meters_to_words(width)}、{_meters_to_words(depth)}"
+    if height is not None:
+        if height < 0.4:
+            size_desc += f"，矮矮的（约到小腿）"
+        elif height < 0.6:
+            size_desc += f"，约到膝盖高"
+        elif height < 0.8:
+            size_desc += f"，约到大腿高"
+        elif height < 1.0:
+            size_desc += f"，约到腰部高"
+        elif height < 1.2:
+            size_desc += f"，约到胸口高"
+        else:
+            size_desc += f"，高高的"
+    return size_desc
+
+
+def _direction_to_words(x_from: float, y_from: float, x_to: float, y_to: float) -> str:
+    """将坐标移动转换为口语化方向描述。"""
+    dx = x_to - x_from
+    dy = y_to - y_from
+
+    # 判断水平方向
+    if abs(dx) < 0.15:
+        horizontal = ""
+    elif dx > 0:
+        horizontal = "往右"
+    else:
+        horizontal = "往左"
+
+    # 判断垂直方向
+    if abs(dy) < 0.15:
+        vertical = ""
+    elif dy > 0:
+        vertical = "往里"
+    else:
+        vertical = "往外"
+
+    distance = math.sqrt(dx * dx + dy * dy)
+    
+    # 构建描述
+    if horizontal or vertical:
+        direction_desc = horizontal + vertical
+        if distance > 0.1:
+            distance_str = _meters_to_words(distance)
+            return f"{direction_desc}移动{distance_str}"
+        else:
+            return f"{direction_desc}挪一下"
+    else:
+        distance_str = _meters_to_words(distance)
+        return f"调整位置（移动{distance_str}）"
+
+
+def _position_to_words(x: float, y: float, room_width: float = 5.0) -> str:
+    """将位置坐标转换为口语化描述。"""
+    # 以房间中点为参考
+    room_center_x = room_width / 2
+    dx = x - room_center_x
+
+    if abs(dx) < 0.5:
+        return "房间中间"
+    elif dx < -1.0:
+        return "房间左边"
+    elif dx > 1.0:
+        return "房间右边"
+    elif dx < 0:
+        return "偏房间左边"
+    else:
+        return "偏房间右边"
+
+
+def _action_to_human(action: str) -> str:
+    """将技术动作转换为口语化描述。"""
+    mapping = {
+        "move": "换个位置",
+        "resize": "改改大小",
+        "replace": "换成别的",
+        "remove": "挪走",
+        "add": "添一个",
+    }
+    return mapping.get(action, action)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 修改应用逻辑（保留核心功能）
+# ════════════════════════════════════════════════════════════════════════════════
 
 
 def apply_modifications(
@@ -473,64 +598,203 @@ def generate_elder_redesign_suggestions(
     proposals: Sequence[ModificationProposal],
     safety_results: Sequence[SafetyConstraintResult],
 ) -> str:
-    """生成详细的适老化改造建议（Markdown）。"""
+    """生成详细的适老化改造建议（通俗易懂版）。
+    
+    【设计原则】
+    - 按【家具布局】和【环境改进】分类
+    - 每项建议解释对老人的具体好处
+    - 用口语化描述替代技术术语
+    """
+    # 计算房间尺寸
+    room_width = room_depth = 5.0
+    if final_room_scene.furniture:
+        all_x = [item.position.x for item in final_room_scene.furniture]
+        all_y = [item.position.y for item in final_room_scene.furniture]
+        if all_x:
+            room_width = max(all_x) - min(all_x) + 1.0
+        if all_y:
+            room_depth = max(all_y) - min(all_y) + 1.0
+
     lines: list[str] = [
-        "# 适老化房间改造详细建议",
+        "适老化房间改造详细建议",
+        "=" * 50,
         "",
-        "## 设计目标",
-        "- 保障老年人日常生活的安全性、无障碍性与舒适度。",
+        "【改造目标】",
+        "让您的家更适合老人居住：",
+        "  - 走路不容易绊倒",
+        "  - 坐下去、站起来不费劲",
+        "  - 晚上起来不用摸黑",
+        "  - 万一滑倒了也能及时被发现",
         "",
-        "## 优先改造项目",
     ]
+
+    # ── 家具布局调整 ─────────────────────────────────────────
+    lines.append("【家具布局调整】")
+    lines.append("")
 
     if proposals:
         for idx, proposal in enumerate(proposals, start=1):
-            rule = _select_best_rule(proposal, safety_results)
-            lines.append(f"### 改造项 {idx}：{proposal.original_object_id}")
-            lines.append(f"- **操作类型**：`{proposal.action}`，参数：`{proposal.new_parameters}`")
-            lines.append(f"- **原因说明**：{proposal.reasoning[:180]}")
-            if rule:
-                lines.append(
-                    f"- **标准依据**：`{rule.source_file}` 第 {rule.page_number} 页；"
-                    f"摘要：{rule.snippet[:180].replace(chr(10), ' ')}"
-                )
+            target = proposal.original_object_id
+            
+            if proposal.action == "move":
+                old_x = proposal.new_parameters.get("_old_x", 0.0)
+                old_y = proposal.new_parameters.get("_old_y", 0.0)
+                new_x = proposal.new_parameters.get("x", old_x + 0.5)
+                new_y = proposal.new_parameters.get("y", old_y)
+                change = _direction_to_words(old_x, old_y, new_x, new_y)
+                what_action = f"把{target}{change}"
+            elif proposal.action == "resize":
+                what_action = f"把{target}改小一点或换掉"
+            elif proposal.action == "replace":
+                what_action = f"把{target}换成更适合老人用的"
             else:
-                lines.append("- **标准依据**：无直接匹配标准，执行保守适老化安全基线。")
-            lines.append("")
+                what_action = f"调整{target}"
+            
+            # 口语化解释好处
+            reason = proposal.reasoning
+            if "heat" in reason.lower() or "火" in reason:
+                benefit = "老人反应慢，离热源太近容易出事"
+            elif "clearance" in reason.lower() or "通道" in reason or "空间" in reason:
+                benefit = "老人走路不稳需要更多空间，这样轮椅、助行器才能过"
+            elif "flammable" in reason.lower() or "可燃" in reason:
+                benefit = "老人防火意识弱，用不容易烧着的更安全"
+            elif "height" in reason.lower() or "高" in reason:
+                benefit = "老人膝盖不好，太高太低都费劲"
+            else:
+                benefit = "这样老人住着更安全、更方便"
+            
+            # 获取规范依据（口语化）
+            rule = _select_best_rule(proposal, safety_results)
+            if rule:
+                grounding = f"依据：{_strip_technical_reference(rule.source_file)}"
+            else:
+                grounding = "依据：《中国建筑无障碍设计规范》适老化通用要求"
+            
+            lines.extend([
+                f"  改造项 {idx}：{target}",
+                f"    怎么改：{what_action}",
+                f"    为什么要改：{reason[:120]}",
+                f"    对老人的好处：{benefit}",
+                f"    {grounding}",
+                "",
+            ])
     else:
-        lines.extend(
-            [
-                "### 改造项 1：优化通道空间",
-                "- **操作**：主要通道（床/座椅→门/卫生间）宽度维持在 ≥ 0.9m。",
-                "- **原因**：保障轮椅和助行器的顺利通过，降低跌倒风险。",
-                "",
-                "### 改造项 2：更换地面材质",
-                f"- **操作**：{_infer_floor_texture_suggestion(final_room_scene)}",
-                "- **原因**：减少老年人常见滑倒事故。",
-                "",
-                "### 改造项 3：安装夜间感应照明",
-                "- **操作**：在床至门/卫生间的路径安装低眩光人体感应灯。",
-                "- **原因**：防止老年人夜间如厕时因视线不清而跌倒。",
-                "",
-            ]
-        )
+        lines.extend([
+            "  （本次检查未发现需要调整的家具）",
+            "  建议：保持现有布局，重点关注下面的【环境改进】部分。",
+            "",
+        ])
 
-    lines.extend(
-        [
-            "## 家具适老化评估",
-            "| 家具 | 材质 | 适老化评估 | 建议调整 |",
-            "|---|---|---|---|",
-        ]
+    # ── 环境改进建议 ─────────────────────────────────────────
+    lines.extend([
+        "",
+        "【环境改进建议】",
+        "",
+    ])
+
+    # 根据房间情况生成个性化建议
+    floor_suggestion = _infer_floor_texture_suggestion(final_room_scene)
+    
+    # 检测是否有可燃材料
+    has_flammable = any(
+        "fabric" in item.material.lower() or "wood" in item.material.lower() or
+        "布" in item.material or "木" in item.material
+        for item in final_room_scene.furniture
     )
-    for item in final_room_scene.furniture:
-        lines.append(
-            f"| {item.name} | {item.material} | "
-            f"{_material_elder_friendliness(item.material)} | "
-            "圆角化处理，保持周边 0.9m 净空，不阻挡主要通道。 |"
-        )
 
-    if not final_room_scene.furniture:
-        lines.append("| 暂无数据 | — | — | 请上传房间照片获取分析结果。 |")
+    suggestions = [
+        {
+            "title": "地面防滑处理",
+            "what": floor_suggestion,
+            "benefit": "老人容易滑倒，地面防滑做得好，能减少一半的摔伤风险。"
+        },
+        {
+            "title": "夜间感应照明",
+            "what": "在床到卫生间的必经路线上安装低眩光人体感应灯",
+            "benefit": "老人起夜多，有灯照着不容易摔；而且灯光柔和不刺眼，不影响老伴睡觉。"
+        },
+        {
+            "title": "门槛和台阶处理",
+            "what": "如果家里有门槛，建议做成斜坡或贴上醒目的警示条",
+            "benefit": "老人抬脚不高，门槛最容易绊倒；轮椅更是根本过不去。"
+        },
+        {
+            "title": "插座和开关位置",
+            "what": "把常用插座和开关调到腰部高度（离地约1米）",
+            "benefit": "老人弯腰不方便，高处够不着、低处要蹲下，都很费劲。"
+        },
+    ]
+
+    if has_flammable:
+        suggestions.insert(0, {
+            "title": "易燃物品远离热源",
+            "what": "检查沙发垫、窗帘、纸箱这些易燃物品，确保离灶台、暖气片至少一大步的距离",
+            "benefit": "老人防火意识弱，发现火情反应慢，远离热源能减少火灾风险。"
+        })
+
+    for idx, s in enumerate(suggestions, start=1):
+        lines.extend([
+            f"  {idx}. {s['title']}",
+            f"     怎么做：{s['what']}",
+            f"     对老人的好处：{s['benefit']}",
+            "",
+        ])
+
+    # ── 家具适老化评估表 ──────────────────────────────────────
+    lines.extend([
+        "",
+        "【家具适老化评估】",
+        "",
+        "  下面列出您家各件家具的适老化情况：",
+        "",
+    ])
+
+    if final_room_scene.furniture:
+        for item in final_room_scene.furniture:
+            elder_friendly = _material_elder_friendliness(item.material)
+            size_desc = _size_to_words(
+                item.dimensions.width, 
+                item.dimensions.depth, 
+                item.dimensions.height
+            )
+            position_desc = _position_to_words(
+                item.position.x, 
+                item.position.y, 
+                room_width
+            )
+            
+            # 判断是否需要特别关注
+            if "不适合" in elder_friendly:
+                attention = "⚠️ 需关注"
+            else:
+                attention = "✓ 基本OK"
+            
+            lines.extend([
+                f"  {item.name}（{position_desc}）",
+                f"    大小：{size_desc}",
+                f"    材质：{item.material}",
+                f"    适老化评估：{elder_friendly}",
+                f"    {attention}",
+                "",
+            ])
+    else:
+        lines.append("  暂无家具数据，请上传房间照片获取详细评估。")
+
+    lines.extend([
+        "",
+        "=" * 50,
+        "温馨提示",
+        "=" * 50,
+        "",
+        "适老化改造不用一步到位，可以按优先级慢慢来：",
+        "",
+        "  第一优先（最危险）：地面防滑、门槛处理",
+        "  第二优先（最实用）：夜间照明、通道清理",
+        "  第三优先（更舒适）：家具调整、插座高度",
+        "",
+        "有条件的话，建议请专业适老化改造团队上门评估，",
+        "他们会根据您的具体情况给出最合适的方案。",
+    ])
 
     return "\n".join(lines).strip() + "\n"
 
@@ -539,42 +803,106 @@ def generate_user_friendly_suggestions_text(
     final_room_scene: RoomScene,
     proposals: Sequence[ModificationProposal],
 ) -> str:
-    """生成面向普通用户的简洁适老化建议（纯文本）。"""
+    """生成面向普通用户的简洁适老化建议（纯人话版本）。
+    
+    【设计原则】
+    - 像邻居老师傅说话一样通俗易懂
+    - 每条建议都解释对老人的具体好处
+    - 不出现技术术语和坐标
+    """
+    # 计算房间大致尺寸
+    room_width = room_depth = 5.0
+    if final_room_scene.furniture:
+        all_x = [item.position.x for item in final_room_scene.furniture]
+        all_y = [item.position.y for item in final_room_scene.furniture]
+        if all_x:
+            room_width = max(all_x) - min(all_x) + 1.0
+        if all_y:
+            room_depth = max(all_y) - min(all_y) + 1.0
+
     lines: list[str] = [
-        "适老化房间改造建议",
-        "",
-        "① 保持通道畅通：",
-        "   主要通道（床、座椅 → 门/卫生间）宽度至少保留 0.9 米，方便轮椅或助行器通过。",
-        "",
-        "② 地面防滑处理：",
-        f"   {_infer_floor_texture_suggestion(final_room_scene)}",
-        "",
-        "③ 夜间照明安全：",
-        "   建议在床到门/卫生间的路线上安装低眩光人体感应灯，防止夜间如厕时跌倒。",
+        "适老化改造建议（通俗版）",
+        "=" * 40,
         "",
     ]
+
+    # ── 基线建议 ──────────────────────────────────────────────
+    lines.extend([
+        "【通用建议 — 适合所有家庭】",
+        "",
+        "① 保持过道畅通",
+        "   把沙发、茶几、矮凳这些容易绊脚的东西收一收。",
+        f"   主要通道（从沙发/床到门/卫生间这段）最好能{_meters_to_words(0.9)}以上。",
+        "   对老人的好处：走路扶不稳的时候，旁边有人能搭把手；坐轮椅或用助行器也能顺利过去。",
+        "",
+        "② 地面要防滑",
+        f"   {_infer_floor_texture_suggestion(final_room_scene)}",
+        "   对老人的好处：老人有时候不穿拖鞋就走路，地面滑的话很容易摔。",
+        "",
+        "③ 夜间要有感应灯",
+        "   建议在床到卫生间的路线上装个感应灯，夜里起来自动亮。",
+        "   对老人的好处：老人起夜多，迷迷糊糊的，有灯照着不容易摔。",
+        "",
+    ])
+
+    # ── 针对本房间的具体建议 ─────────────────────────────────
     if proposals:
-        lines.append("本房间检测到的具体改造建议：")
+        lines.extend([
+            "【针对您家的具体问题】",
+            "",
+        ])
         for idx, proposal in enumerate(proposals[:6], start=1):
-            lines.append(
-                f"   {idx}. {proposal.original_object_id}："
-                f"建议{_action_zh(proposal.action)}。"
-                f"理由：{proposal.reasoning[:100]}"
-            )
+            target = proposal.original_object_id
+            
+            if proposal.action == "move":
+                old_x = proposal.new_parameters.get("_old_x", 0.0)
+                old_y = proposal.new_parameters.get("_old_y", 0.0)
+                new_x = proposal.new_parameters.get("x", old_x + 0.5)
+                new_y = proposal.new_parameters.get("y", old_y)
+                change = _direction_to_words(old_x, old_y, new_x, new_y)
+            else:
+                change = _action_to_human(proposal.action)
+            
+            # 口语化解释原因
+            reason = proposal.reasoning
+            if "heat" in reason.lower() or "fire" in reason.lower() or "热" in reason:
+                benefit = "离热源太近容易着火，老人反应慢，发现时可能已经晚了"
+            elif "clearance" in reason.lower() or "通道" in reason:
+                benefit = "空间太挤，老人走路容易碰到；轮椅和助行器也过不去"
+            elif "flammable" in reason.lower() or "可燃" in reason:
+                benefit = "这种材质容易烧着，老人用的东西要选安全的"
+            else:
+                benefit = "老人住着不方便，改改更安全"
+            
+            lines.extend([
+                f"  {idx}. {target}",
+                f"     怎么办：{change}",
+                f"     为什么：{reason[:80]}",
+                f"     对老人好处：{benefit}",
+                "",
+            ])
     else:
-        lines.extend(
-            [
-                "本房间检测到的具体改造建议：",
-                "   本次分析未发现重大违规项，建议按上述 ① ② ③ 三项执行适老化基线改造。",
-            ]
-        )
+        lines.extend([
+            "【针对您家的具体问题】",
+            "  从这次照片来看，您的房间整体还不错！",
+            "  按照上面①②③三条做就更好了。",
+            "",
+        ])
+
+    lines.extend([
+        "",
+        "=" * 40,
+        "小贴士",
+        "=" * 40,
+        "",
+        "适老化改造不用一次到位，可以先从最危险的地方改起。",
+        "比如：先把最容易滑倒的地方处理了，再装几个感应灯，最后再慢慢调整家具位置。",
+        "有条件的话，可以请社区的适老化改造专员上门看看，给的建议更准确。",
+    ])
+
     return "\n".join(lines).strip() + "\n"
 
 
-def _action_zh(action: str) -> str:
-    return {"move": "移动位置", "resize": "调整尺寸", "replace": "更换/移除"}.get(
-        action, action
-    )
 
 
 def generate_safety_report(
@@ -584,62 +912,151 @@ def generate_safety_report(
     status: str,
     failure_trace: Sequence[str] | None = None,
 ) -> str:
-    """生成安全审查报告（含评分、依据和失败追踪）。"""
+    """生成面向普通用户的易懂安全审查报告。
+    
+    【设计原则】
+    - 不出现坐标、JSON、move/rotate 等技术术语
+    - 用口语化描述定位隐患位置
+    - 明确标注隐患对应的照片位置
+    - 每条建议都要解释对老人的具体好处
+    """
     failures = list(failure_trace or [])
     safety_score = _compute_safety_score(status, proposals, safety_results, len(failures))
 
-    status_zh = {"APPROVED": "通过", "REJECTED": "不通过"}.get(status, status)
+    status_zh = {"APPROVED": "通过", "REJECTED": "需改进"}.get(status, status)
+
+    # 计算房间大致尺寸用于口语化定位
+    room_width = room_depth = 5.0  # 默认值
+    if final_room_scene.furniture:
+        all_x = [item.position.x for item in final_room_scene.furniture]
+        all_y = [item.position.y for item in final_room_scene.furniture]
+        if all_x:
+            room_width = max(all_x) - min(all_x) + 1.0
+        if all_y:
+            room_depth = max(all_y) - min(all_y) + 1.0
 
     lines: list[str] = [
-        "# 建筑合规安全审查报告",
+        "=" * 50,
+        "适老化安全审查报告",
+        "=" * 50,
         "",
-        "## 最终结论",
-        f"- **审查结果**：**{status_zh}**",
-        f"- **安全评分**：**{safety_score:.1f}/100**",
-        f"- **场景内家具数量**：**{len(final_room_scene.furniture)} 件**",
+        "【审查结论】",
+        f"  本次审查结果：{status_zh}",
+        f"  安全评分：{safety_score:.0f}/100",
+        f"  本次共检查了 {len(final_room_scene.furniture)} 件家具和用品",
         "",
-        "## 变更审查清单",
-        "",
-        "| 变更对象 | 操作 | 对应安全规则 | 来源文件 | 页码 | 规则摘要 |",
-        "|---|---|---|---|---|---|",
     ]
 
-    for proposal in proposals:
-        rule = _select_best_rule(proposal, safety_results)
-        if rule is None:
-            lines.append(
-                f"| {proposal.original_object_id} | {proposal.action} | "
-                "无直接匹配规则 | — | — | — |"
-            )
-            continue
-
-        snippet = rule.snippet.replace("\n", " ").strip()
-        if len(snippet) > 160:
-            snippet = snippet[:157] + "..."
-        lines.append(
-            "| "
-            f"{proposal.original_object_id} | {proposal.action} | "
-            f"{rule.constraint.rule_id}（{rule.constraint.material_requirement}）| "
-            f"{rule.source_file} | {rule.page_number} | "
-            f"{snippet} |"
-        )
+    # ── 风险分类描述 ──────────────────────────────────────────────
+    if proposals:
+        lines.extend([
+            "【需要关注的问题】",
+            "",
+        ])
+        for idx, proposal in enumerate(proposals, start=1):
+            rule = _select_best_rule(proposal, safety_results)
+            target_name = proposal.original_object_id
+            
+            # 口语化描述变更
+            if proposal.action == "move":
+                old_x = proposal.new_parameters.get("_old_x", 0.0)
+                old_y = proposal.new_parameters.get("_old_y", 0.0)
+                new_x = proposal.new_parameters.get("x", old_x + 0.5)
+                new_y = proposal.new_parameters.get("y", old_y)
+                change_desc = _direction_to_words(old_x, old_y, new_x, new_y)
+            else:
+                change_desc = _action_to_human(proposal.action)
+            
+            lines.append(f"  问题 {idx}：{target_name}")
+            lines.append(f"         建议：{change_desc}")
+            lines.append(f"         原因：{proposal.reasoning[:80]}")
+            
+            if rule:
+                # 口语化规范引用
+                doc_name = _strip_technical_reference(rule.source_file)
+                lines.append(f"         依据：{doc_name}")
+            
+            lines.append("")
 
     if not proposals:
-        lines.append("| 暂无变更项 | — | 无 | — | — | — |")
-
-    lines.extend(["", "## 审查失败追踪"])
-    if failures:
-        for item in failures:
-            lines.append(f"- ❌ {item}")
-    else:
-        lines.append("✅ 安全审查官未记录任何失败项。")
-
-    lines.extend(
-        [
+        lines.extend([
+            "【审查结果】",
+            "  ✅ 本次审查未发现重大安全隐患",
+            "  ✅ 您的房间整体布局基本合理",
             "",
-            "## 报告说明",
-            "本报告基于 ChromaDB RAG 知识库检索结果，引用 GB 标准原文并标注来源页码，",
-            "以确保每项安全结论均可追溯、可查证。",
-        ]
-    )
+        ])
+
+    # ── 适老化基线建议（始终提供） ────────────────────────────────
+    lines.extend([
+        "【适老化改造建议】",
+        "",
+        "  根据《中国建筑无障碍设计规范》，我们建议您关注以下方面：",
+        "",
+        "  1. 通道空间",
+        "     建议：主要通道（床或沙发 → 门/卫生间）保持足够宽敞",
+        "     对老人的好处：老人走路不稳时，身边有人能搭把手；轮椅、助行器能顺利通过",
+        "",
+        "  2. 地面防滑",
+        "     建议：选用防滑性能好的地面材料，特别是卫生间门口和厨房",
+        "     对老人的好处：大大降低滑倒风险，老人赤脚走路也不怕",
+        "",
+        "  3. 夜间照明",
+        "     建议：在床到卫生间的路线安装感应灯，夜间起身自动亮起",
+        "     对老人的好处：老人起夜不用摸黑找开关，避免摔倒在黑暗的走廊",
+        "",
+    ])
+
+    # ── 审查过程记录 ──────────────────────────────────────────────
+    if failures:
+        lines.extend([
+            "",
+            "【审查过程记录】",
+        ])
+        for item in failures:
+            lines.append(f"  ⚠️  {item}")
+    else:
+        lines.extend([
+            "",
+            "【审查过程记录】",
+            "  ✅ 安全审查官未发现违规项",
+        ])
+
+    lines.extend([
+        "",
+        "=" * 50,
+        "报告说明",
+        "=" * 50,
+        "",
+        "本报告依据国家相关建筑规范，结合您的房间实际情况生成。",
+        "如有任何疑问，建议咨询专业适老化改造团队进行现场评估。",
+    ])
+
     return "\n".join(lines).strip() + "\n"
+
+
+def _strip_technical_reference(filename: str) -> str:
+    """将技术文件名转换为规范全称。"""
+    if not filename:
+        return "相关国家标准"
+    
+    # 去除 .pdf、_processed 等后缀
+    name = filename.split(".")[0] if "." in filename else filename
+    name = name.replace("_processed", "").replace("_chunks", "").replace("_", " ")
+    
+    # 常见规范名称映射（不区分大小写）
+    norm_names = {
+        "gb50016": "《建筑设计防火规范》",
+        "gb50222": "《建筑内部装修设计防火规范》",
+        "gb50352": "《民用建筑设计统一标准》",
+        "gb50763": "《中国建筑无障碍设计规范》",
+    }
+    
+    name_lower = name.lower()
+    for code, full_name in norm_names.items():
+        if code in name_lower:
+            return full_name
+    
+    # 如果是其他文件，返回清洗后的名称
+    # 将下划线转为空格，首字母大写
+    readable_name = " ".join(word.capitalize() for word in name.split())
+    return f"《{readable_name}》"

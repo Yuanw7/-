@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re as _re
 from pathlib import Path
@@ -21,44 +22,267 @@ from models import RoomScene
 
 
 MODEL_VISION = "glm-4.6V"
-
-# ════════════════════════════════════════════════════════════════════════════════
-# PROMPT 边界化 — 要求模型将 JSON 包裹在 <result></result> XML 标签中
-# ════════════════════════════════════════════════════════════════════════════════
-
-SYSTEM_PROMPT = "你是一个专业的房间场景分析助手。请直接分析用户提供的图片，不要输出与图片分析无关的内容。"
-
-QUALITY_PROMPT = "这张图片是室内房间场景吗？图片质量能看清大致布局吗？请用JSON格式回复：{\"is_room\": true或false, \"is_blurry_or_unusable\": true或false, \"reason\": \"原因\"}"
-
-SCENE_PROMPT = """分析这张房间照片，识别所有可见家具，给出位置和尺寸。
-
-【输出格式】
-将结果包裹在 <result></result> XML 标签之间，禁止输出任何说明文字：
-<result>
-{
-  "room": {
-    "boundary": {
-      "walls": ["看到的墙面"],
-      "windows": ["看到的窗户"],
-      "doors": ["看到的门"]
-    },
-    "furniture": [
-      {
-        "name": "物品名称",
-        "dimensions": {"width": 1.5, "depth": 0.8, "height": 0.9},
-        "position": {"x": 0.5, "y": 1.2, "z": 0, "rotation_degrees": 0},
-        "material": "材质"
-      }
-    ]
-  }
+DEFAULT_CALIBRATION = {
+    "ref_object": None,
+    "ref_size_m": None,
 }
+
+logger = logging.getLogger("vision_engine")
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 重构版系统提示词 — 「适老化安全审查助手」
+# 设计原则：去技术化 + 结构化深度扫描 + 人话输出
+# ════════════════════════════════════════════════════════════════════════════════
+
+SYSTEM_PROMPT = """你是一位资深适老化改造专家，专注于老年人居住安全审查。你的分析报告必须做到：
+
+【核心理念】
+- 把每一个技术术语翻译成老年人能听懂的话
+- 用"搬家师傅"的思维思考空间问题，而不是工程师的思维
+- 每一条建议都要说清楚"对老人有什么好处"
+
+【严禁事项 — 碰线必出局】
+1. 绝对不可以说 x坐标、y坐标、z坐标、数值参数、JSON
+2. 绝对不可以用 move、rotate、transform、offset 等技术词
+3. 绝对不可以出现 .pdf、retrieved_rule、chunk_index 等后台字样
+4. 绝对不可以说"请注意"、"建议您"这类废话开头
+
+【思维链要求（CoT）— 必须按顺序执行】
+
+第一步：环境校准（找参照物，建比例尺）
+- 扫描图中是否有已知尺寸的物品（门把手一般 10cm、成年人身高约 1.7m、瓷砖常见 30cm×30cm）
+- 告诉用户："我看到您家的 [参照物]，以它为标准，您的客厅大约是 X 米宽"
+- 如果用户提供了校准数据，必须优先使用用户给的参照物
+
+第二步：闭环核对（检查死角）
+- 如果是多张照片，必须对比第一张和最后一张
+- 问自己："这两张照片之间有没有漏掉的地方？"
+- 在报告中注明："本次扫描覆盖了 [区域]，以下区域可能被遗漏：[位置]"
+
+第三步：风险识别（对照规范）
+依据《中国建筑无障碍设计规范》（GB 50763），重点扫描：
+- 地面：是否有光滑反光区域？地毯边缘是否翘起？
+- 照明：白天/晚上亮度是否够？阴影区域有多大？
+- 家具布局：过道最窄处有多少？轮椅能通过吗？
+- 高差：门口有没有台阶？落差有多大？
+
+【输出格式 — 安全报告】
+```
+【安全隐患】（按严重程度分段）
+
+🔴 高风险：[具体位置+隐患描述]
+   - 照片：第一张/第三张
+   - 为什么会出事：[具体原因]
+   - 老人最容易摔倒的情形：[描述]
+
+🟡 中风险：[具体位置+隐患描述]
+   ...
+
+🟢 低风险：[具体位置+隐患描述]
+   ...
+
+【死角提醒】
+本次扫描未能覆盖的区域：[位置]
+原因：[照片拼接遗漏/光线不足/遮挡]
+建议：[如何补拍或改进]
+
+【适老化改造建议】
+
+【家具布局调整】
+1. [家具名] → [调整到哪里]
+   对老人的好处：方便老人 [具体场景] 时 [具体好处]
+
+2. ...
+
+【环境改进建议】
+1. [改进项]
+   对老人的好处：能帮助老人 [具体场景] 时 [具体好处]
+
+2. ...
+```
+
+【语言风格】
+- 像邻居家的装修老师傅在说话
+- 用"把"不用"将"，用"老人"不用"老年人"（除非正式引用规范）
+- 距离说"一臂长"不说"0.6米"，说"一拃宽"不说"20厘米"
+- 方向说"往窗户那边"不说"沿X轴正向"
+
+【规范引用规则】
+- 引用标准时必须使用全称，如《中国建筑无障碍设计规范》
+- 绝不可以出现文件路径、页码、.pdf 等技术痕迹
+- 可以说："根据国家无障碍设计规范要求"，但不可说"根据GB50763第XX页"
+
+【图片要求】
+- 必须明确指出隐患在"哪张照片的哪个区域"
+- 用"左边/右边/靠近门的位置"等口语化定位
+"""
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 接龙拍摄质量检测 Prompt（单图）
+# ──────────────────────────────────────────────────────────────────────────────
+QUALITY_PROMPT = """请判断这张图片：
+
+1. 这是室内房间的照片吗？
+2. 图片清晰度够吗？光线是否正常？
+
+请用中文回答，只需要说"是"或"不是"，以及简要说明原因。
+例如："是的，是客厅照片，清晰度OK" 或 "不是，看起来是户外风景" 或 "图片太暗，看不清"
+"""
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 多图空间链质量检测 Prompt（多图）
+# ──────────────────────────────────────────────────────────────────────────────
+QUALITY_MULTI_PROMPT = """以下 {n} 张照片是按「接龙」方式拍摄的室内房间照片。
+
+请判断：
+1. 这些是不是同一个房间的照片？
+2. 照片清晰度够吗？光线正常吗？
+3. 每张照片之间有没有重叠区域？
+
+请用中文简要回答，不需要输出结构化数据。"""
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 接龙空间分析主 Prompt（多图）— 重构版
+# ──────────────────────────────────────────────────────────────────────────────
+SCENE_MULTI_PROMPT = """分析这 {n} 张按「接龙」顺序拍摄的室内房间照片，构建完整空间理解。
+
+【第一步：环境校准】
+{calibration_instruction}
+
+【第二步：闭环核对】
+- 仔细对比第一张照片和最后一张照片
+- 找出两张照片之间的接龙关系（即：前一张照片最右侧的物品，在后一张照片最左侧是否出现？）
+- 如果发现接龙断裂，在【死角提醒】中标注出来
+
+【第三步：风险扫描】
+依据《中国建筑无障碍设计规范》（GB 50763），重点关注：
+- 地面材质是否光滑？哪里最滑？
+- 照明是否均匀？有没有很暗的角落？
+- 家具之间的通道够不够走？
+- 有没有台阶、高差、门槛？
+- 小件杂物多不多？容易绊倒吗？
+
+【输出要求】
+将结果包裹在 <result></result> XML 标签之间，禁止输出任何说明文字：
+
+<result>
+{{
+  "room": {{
+    "boundary": {{
+      "walls": ["看到的墙面方向，如"北墙"、"靠阳台的墙""],
+      "windows": ["窗户大概在哪里，如"客厅南面有两个窗户""],
+      "doors": ["门在哪里，朝哪个方向开"]
+    }},
+    "furniture": [
+      {{
+        "name": "物品名称",
+        "size_description": "大小描述，如"和单人沙发差不多大"、"约一张餐桌大小"",
+        "where_is_it": "物品在房间哪个位置，用口语化描述，如"靠窗的角落"、"餐桌旁边"",
+        "material": "主要材质，如"布艺"、"木质"、"金属""
+      }}
+    ],
+    "scan_coverage": {{
+      "covered": ["已扫描到的区域"],
+      "missed": ["可能有死角的位置"],
+      "reason": "遗漏原因"
+    }},
+    "risks": [
+      {{
+        "level": "high/medium/low",
+        "where": "在第几张照片的哪个位置",
+        "what": "隐患描述",
+        "why_dangerous": "为什么会造成老人摔倒/受伤"
+      }}
+    ]
+  }}
+}}
 </result>
 
-【估算原则】
-- 成年人身高约1.7m，以此估算家具高度
-- 客厅沙发约1.8×0.85×0.9m，餐桌约1.2×0.7×0.75m
-- 坐标单位：米；原点(0,0)在房间俯视图左下角，X轴向右，Y轴向上
+【口语化原则】
+- 用"约一张餐桌大"代替"1.2m×0.7m"
+- 用"够两个人并排走"代替"通道宽度1.2m"
+- 用"靠近门这边"代替"房间南侧"
+- 用"约到膝盖这么高"代替"高度0.45m"
 """
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 单图空间分析主 Prompt（降级/单图模式）— 重构版
+# ──────────────────────────────────────────────────────────────────────────────
+SCENE_PROMPT = """分析这张房间照片，识别所有可见物品和潜在安全隐患。
+
+【第一步：环境校准】
+{calibration_instruction}
+
+【第二步：风险扫描】
+依据《中国建筑无障碍设计规范》（GB 50763），逐一检查：
+
+1. 地面情况
+   - 地板是什么材质？光滑吗？
+   - 有没有地毯？地毯边缘翘起来了吗？
+   - 哪里最容易滑倒？
+
+2. 照明情况
+   - 整个房间亮不亮？
+   - 有没有特别暗的角落？
+   - 晚上开灯的话，影子会不会很重？
+
+3. 家具布局
+   - 过道最窄的地方能走过去吗？
+   - 老人坐的椅子/沙发好起身吗？
+   - 有没有容易绊脚的杂物？
+
+4. 高差和障碍
+   - 门口有没有门槛/台阶？
+   - 电线是不是乱糟糟的？
+   - 小凳子、小孩玩具多吗？
+
+【输出要求】
+将结果包裹在 <result></result> XML 标签之间，禁止输出任何说明文字：
+
+<result>
+{{
+  "room": {{
+    "boundary": {{
+      "walls": ["看到的墙面"],
+      "windows": ["窗户在哪里"],
+      "doors": ["门在哪里"]
+    }},
+    "furniture": [
+      {{
+        "name": "物品名称",
+        "size_description": "大小描述，如"约一臂长"",
+        "where_is_it": "位置描述，如"靠窗"、"沙发旁边"",
+        "material": "材质"
+      }}
+    ],
+    "scan_coverage": {{
+      "covered": ["从这张照片能看到的区域"],
+      "missed": ["可能被遮挡/看不到的区域"],
+      "reason": "原因"
+    }},
+    "risks": [
+      {{
+        "level": "high/medium/low",
+        "where": "在照片哪个位置",
+        "what": "隐患描述",
+        "why_dangerous": "对老人的具体危险"
+      }}
+    ]
+  }}
+}}
+</result>
+
+【口语化原则】
+- 用"够不够两个人并排走"判断通道宽度
+- 用"老人坐下去站不站得起来"判断座椅高度
+- 用"晚上起来喝水会不会绊倒"判断地面风险
+- 用"能不能坐轮椅到床边"判断空间开阔度"""
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# END 重构版系统提示词
+# ════════════════════════════════════════════════════════════════════════════════
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -232,8 +456,34 @@ def extract_json_from_thinking_model(raw_text: str) -> dict[str, Any]:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# Helper Functions
+# Calibration — converts user form data → system instruction
 # ════════════════════════════════════════════════════════════════════════════════
+
+def _build_calibration_instruction(
+    ref_object: str | None,
+    ref_size_m: float | None,
+) -> str:
+    """Convert calibration form data into a LLM-readable system instruction."""
+    if ref_object and ref_size_m and ref_size_m > 0:
+        name_map = {
+            "ruler":    "卷尺",
+            "a4":       "A4纸",
+            "newspaper":"报纸",
+            "book":     "16开书",
+            "phone":    "手机",
+            "other":    "已知物品",
+        }
+        ref_name = name_map.get(ref_object, ref_object)
+        return (
+            f"★ 比例尺约束：已知图中{ref_name}的物理长度为 {ref_size_m:.3f} 米。"
+            f"以此为唯一比例尺，推算画面中所有家具和通道的绝对距离（米）。"
+            f"所有坐标、宽深高数值必须与此比例尺一致，不得估算超出比例尺的尺寸。"
+        )
+    return (
+        "★ 比例尺约束（无显式校准）：以成年人身高约 1.7m 为参照估算家具高度，"
+        "以常见家具尺寸（沙发约 1.8m 宽、餐桌约 1.2m 宽）为参照估算其他尺寸。"
+        "在响应中注明「未提供显式比例尺，以上为经验估算」。"
+    )
 
 def _load_image_base64(image_path: str) -> str:
     """加载图片并返回 base64 编码字符串（不含 data URI 前缀）。"""
@@ -347,7 +597,6 @@ def _call_glm_vision(
             {
                 "role": "user",
                 "content": [
-                    # 官方文档要求：text 在前，image_url 在后
                     {"type": "text", "text": prompt},
                     {"type": "image_url", "image_url": {"url": data_uri}},
                 ],
@@ -357,7 +606,6 @@ def _call_glm_vision(
 
     response = client.chat.completions.create(**kwargs)
 
-    # 安全提取 content：message.content 可能是 str | list | None
     raw_msg = response.choices[0].message
     if isinstance(raw_msg.content, list):
         parts = []
@@ -379,24 +627,81 @@ def _call_glm_vision(
     return content
 
 
-def analyze_room_image(image_path: str) -> RoomScene:
-    """分析房间照片，返回结构化的 RoomScene 对象。
+def _call_glm_vision_multi(
+    client: ZhipuAI,
+    images_base64: list[str],
+    prompt: str,
+    system_instruction: str,
+) -> str:
+    """向 GLM-4.6V 发送多张图片+文本，返回模型响应的文本内容。
 
-    使用强力解析器（extract_json_from_thinking_model）从 Thinking Model
-    的混乱输出中精准提取 JSON，保证任何情况下都能尽可能解析成功。
+    图片按接龙顺序依次编号（img_1, img_2, ...），
+    每张图片之间建立 Overlap 关系供 LLM 构建空间拓扑。
+    """
+    content_parts: list[dict[str, Any]] = [
+        {"type": "text", "text": prompt},
+    ]
+    for b64 in images_base64:
+        data_uri = f"data:image/jpeg;base64,{b64}"
+        content_parts.append({"type": "image_url", "image_url": {"url": data_uri}})
+
+    kwargs: dict[str, Any] = {
+        "model": MODEL_VISION,
+        "messages": [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": content_parts},
+        ],
+    }
+
+    response = client.chat.completions.create(**kwargs)
+
+    raw_msg = response.choices[0].message
+    if isinstance(raw_msg.content, list):
+        parts = []
+        for part in raw_msg.content:
+            if isinstance(part, dict):
+                if part.get("type") == "text":
+                    parts.append(part.get("text", ""))
+        content = "".join(parts)
+    else:
+        content = raw_msg.content
+
+    if not content:
+        raise RuntimeError(
+            f"GLM-4.6V 返回了空内容（多图模式）。model={MODEL_VISION}"
+        )
+    return content
+
+
+
+
+
+def analyze_room_image(
+    image_path: str,
+    calibration_data: dict | None = None,
+) -> RoomScene:
+    """分析单张房间照片，返回结构化的 RoomScene 对象。
 
     Args:
-        image_path: 图片文件路径（本地路径或绝对路径）
+        image_path:       图片文件路径（本地路径或绝对路径）
+        calibration_data: 参照物校准数据
+                         {"ref_object": str, "ref_size_m": float}
+                         参照物名称：ruler/a4/newspaper/book/phone/other
 
     Raises:
         FileNotFoundError: 图片文件不存在
-        ValueError: 图片非房间场景或质量不合格
-        RuntimeError: 所有解析策略均失败
+        ValueError:       图片非房间场景或质量不合格
+        RuntimeError:     所有解析策略均失败
     """
+    cal = dict(calibration_data) if calibration_data else {}
+    ref_object = cal.get("ref_object") or None
+    ref_size_m = float(cal["ref_size_m"]) if cal.get("ref_size_m") is not None else None
+    calibration_instruction = _build_calibration_instruction(ref_object, ref_size_m)
+
     client = _create_client()
     image_b64 = _load_image_base64(image_path)
 
-    # ── 步骤 1: 图片质量检测 ────────────────────────────────────────────────
+    # ── 步骤 1: 图片质量检测 ───────────────────────────────────────────────
     quality_text = _call_glm_vision(
         client,
         image_b64,
@@ -418,10 +723,13 @@ def analyze_room_image(image_path: str) -> RoomScene:
         raise ValueError(f"图片质量不合格（模糊/遮挡/光线过暗）：{quality.reason}")
 
     # ── 步骤 2: 场景提取 ───────────────────────────────────────────────────
+    scene_prompt = SCENE_PROMPT.format(
+        calibration_instruction=calibration_instruction,
+    )
     scene_text = _call_glm_vision(
         client,
         image_b64,
-        SCENE_PROMPT,
+        scene_prompt,
         SYSTEM_PROMPT,
     )
 
@@ -432,4 +740,89 @@ def analyze_room_image(image_path: str) -> RoomScene:
     except (ValueError, json.JSONDecodeError, ValidationError) as exc:
         raise RuntimeError(
             f"无法从 GLM-4.6V 响应中提取 RoomScene JSON（强力解析器）：{exc}"
+        ) from exc
+
+
+
+def analyze_room_images(
+    image_paths: list[str],
+    calibration_data: dict | None = None,
+) -> RoomScene:
+    """分析多张按「接龙」顺序拍摄的室内房间照片，构建统一空间模型。
+
+    Args:
+        image_paths:      按拍摄顺序排列的图片路径列表（至少 1 张）
+        calibration_data:  参照物校准数据，同 analyze_room_image
+
+    Raises:
+        FileNotFoundError: 任意图片文件不存在
+        ValueError:        图片非房间场景或质量不合格
+        RuntimeError:      所有解析策略均失败
+    """
+    if not image_paths:
+        raise ValueError("image_paths 不能为空")
+
+    cal = dict(calibration_data) if calibration_data else {}
+    ref_object = cal.get("ref_object") or None
+    ref_size_m = float(cal["ref_size_m"]) if cal.get("ref_size_m") is not None else None
+    calibration_instruction = _build_calibration_instruction(ref_object, ref_size_m)
+
+    client = _create_client()
+    images_b64 = [_load_image_base64(p) for p in image_paths]
+    n = len(images_b64)
+
+    logger.info(
+        "analyze_room_images: %d images, calibration=%s",
+        n,
+        {"ref_object": ref_object, "ref_size_m": ref_size_m},
+    )
+
+    # ── 步骤 1: 多图质量检测 ─────────────────────────────────────────────
+    quality_prompt = QUALITY_MULTI_PROMPT.format(n=n)
+    quality_text = _call_glm_vision_multi(
+        client,
+        images_b64,
+        quality_prompt,
+        "你是图片质量评估专家。将结果包裹在 <result></result> 标签之间，禁止输出任何解释。",
+    )
+
+    try:
+        quality_payload: dict[str, Any] = extract_json_from_thinking_model(quality_text)
+        is_valid = quality_payload.get("is_valid", True)
+        is_blurry = quality_payload.get(
+            "is_blurry_or_unusable",
+            quality_payload.get("blurry_or_unusable", False),
+        )
+        reason = quality_payload.get("reason", "")
+        overlap = quality_payload.get("overlap_quality", "unknown")
+    except (ValueError, json.JSONDecodeError, ValidationError) as exc:
+        logger.warning("无法解析多图质量结果，降级为单图检测: %s", exc)
+        is_valid, is_blurry, reason, overlap = True, False, "解析降级", "unknown"
+
+    if not is_valid:
+        raise ValueError(f"图片组未通过房间场景检测：{reason}")
+    if is_blurry:
+        raise ValueError(f"图片组质量不合格（模糊/遮挡/光线过暗）：{reason}")
+
+    logger.info("多图质量检测通过. overlap_quality=%s, images=%d", overlap, n)
+
+    # ── 步骤 2: 多图空间链场景提取 ───────────────────────────────────────
+    scene_prompt = SCENE_MULTI_PROMPT.format(
+        n=n,
+        calibration_instruction=calibration_instruction,
+    )
+    scene_text = _call_glm_vision_multi(
+        client,
+        images_b64,
+        scene_prompt,
+        SYSTEM_PROMPT,
+    )
+
+    try:
+        scene_payload = extract_json_from_thinking_model(scene_text)
+        normalized_payload = _normalize_room_scene_payload(scene_payload)
+        return RoomScene.model_validate(normalized_payload)
+    except (ValueError, json.JSONDecodeError, ValidationError) as exc:
+        raise RuntimeError(
+            f"无法从 GLM-4.6V 多图响应中提取 RoomScene JSON（强力解析器）：{exc}"
         ) from exc

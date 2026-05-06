@@ -17,9 +17,10 @@ import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import FileResponse
+from typing import Annotated, Any
 
 # Load environment variables
 load_dotenv()
@@ -51,7 +52,7 @@ from output_engine import (
     generate_strict_change_formula,
     generate_user_friendly_suggestions_text,
 )
-from vision_engine import analyze_room_image
+from vision_engine import analyze_room_image, analyze_room_images
 
 logger.info("Environment validated. API starting...")
 
@@ -93,40 +94,86 @@ MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
 
 @app.post("/analyze-room")
-async def analyze_room(file: UploadFile = File(...)) -> dict[str, object]:
+async def analyze_room(
+    files: Annotated[list[UploadFile], File(description="房间照片，支持多张（接龙顺序）")],
+    calibration_data: Annotated[str | None, Form(description="参照物校准数据 JSON")] = None,
+) -> dict[str, object]:
     """
     分析房间图片，返回完整的适老化合规审查结果。
+
+    【接口升级 — 多图空间链】
+    - 接收 files（List[UploadFile]）和 calibration_data（dict）
+    - 按上传顺序编号，利用图片 Overlap 构建空间拓扑
+    - 将参照物尺寸注入 Prompt 作为唯一比例尺
 
     【防御性设计】
     - 所有层级均用 try/except 包裹
     - 任何解析失败均返回合法 JSON，前端永不白屏
     - 错误详情写入日志，便于工程师排查
     """
-    logger.info("Received analyze-room request: filename=%s", file.filename)
+    # ── 解析校准数据 ─────────────────────────────────────────────────
+    calibration: dict[str, Any] = {}
+    if calibration_data:
+        try:
+            import json as _json
 
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Uploaded file is missing a filename.")
+            calibration = _json.loads(calibration_data)
+            if not isinstance(calibration, dict):
+                raise ValueError("calibration_data must be a JSON object")
+        except Exception as exc:
+            logger.warning("calibration_data 解析失败: %s，使用默认空校准", exc)
 
-    suffix = Path(file.filename).suffix.lower() or ".jpg"
-    if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
-        raise HTTPException(status_code=400, detail="Only image uploads are supported.")
+    # ── 验证文件列表 ────────────────────────────────────────────────
+    if not files:
+        raise HTTPException(status_code=400, detail="至少需要上传一张房间照片。")
 
-    temp_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{suffix}"
+    valid_exts = {".jpg", ".jpeg", ".png", ".webp"}
+    temp_paths: list[Path] = []
+
     try:
-        content = await file.read()
+        for idx, file in enumerate(files):
+            if not file.filename:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"第 {idx + 1} 个文件缺少文件名。",
+                )
+            suffix = Path(file.filename).suffix.lower() or ".jpg"
+            if suffix not in valid_exts:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"第 {idx + 1} 个文件格式不支持（{suffix}），仅支持 jpg/jpeg/png/webp。",
+                )
 
-        if len(content) > MAX_FILE_SIZE_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=f"File too large. Maximum size is {MAX_FILE_SIZE_MB}MB.",
+            content = await file.read()
+            if len(content) > MAX_FILE_SIZE_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"第 {idx + 1} 个文件超过 {MAX_FILE_SIZE_MB}MB 限制。",
+                )
+
+            temp_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{suffix}"
+            temp_path.write_bytes(content)
+            temp_paths.append(temp_path)
+
+        logger.info(
+            "接收到 %d 张图片，校准数据=%s",
+            len(temp_paths),
+            {"ref_object": calibration.get("ref_object"), "ref_size_m": calibration.get("ref_size_m")},
+        )
+
+        # ── 阶段 1: 视觉分析（自动选择单图/多图模式） ───────────────────
+        if len(temp_paths) == 1:
+            room_scene = analyze_room_image(
+                str(temp_paths[0]),
+                calibration_data=calibration,
+            )
+        else:
+            room_scene = analyze_room_images(
+                [str(p) for p in temp_paths],
+                calibration_data=calibration,
             )
 
-        temp_path.write_bytes(content)
-        logger.info("Image saved to %s (%d bytes)", temp_path, len(content))
-
-        # ── 阶段 1: 视觉分析 ──────────────────────────────────────────────
-        room_scene = analyze_room_image(str(temp_path))
-        logger.info("Vision analysis complete: %d furniture detected", len(room_scene.furniture))
+        logger.info("视觉分析完成: %d 件家具", len(room_scene.furniture))
 
         # ── 阶段 2: Agent 推理 ───────────────────────────────────────────
         agent_state = run_design_agent(room_scene)
@@ -140,7 +187,11 @@ async def analyze_room(file: UploadFile = File(...)) -> dict[str, object]:
         )
 
         # ── 阶段 3: 应用变更（如 APPROVED） ───────────────────────────────
-        final_scene = apply_modifications(room_scene, proposals) if status == "APPROVED" else room_scene
+        final_scene = (
+            apply_modifications(room_scene, proposals)
+            if status == "APPROVED"
+            else room_scene
+        )
 
         # ── 阶段 4: 生成所有输出报告 ────────────────────────────────────
         blender_script = generate_blender_script(final_scene)
@@ -179,13 +230,17 @@ async def analyze_room(file: UploadFile = File(...)) -> dict[str, object]:
             "user_friendly_suggestions_text": user_friendly_suggestions,
             "safety_report_markdown": safety_report,
             "reasoning_trace_file": "reasoning_trace.json",
-            # 成功标识（供前端区分错误/成功）
+            # 元数据
             "_parse_success": True,
             "_parse_error": None,
+            "_images_count": len(temp_paths),
+            "_calibration": {
+                "ref_object": calibration.get("ref_object"),
+                "ref_size_m": calibration.get("ref_size_m"),
+            },
         }
 
     except HTTPException:
-        # HTTP 层异常直接重新抛出
         raise
 
     except FileNotFoundError as exc:
@@ -201,12 +256,9 @@ async def analyze_room(file: UploadFile = File(...)) -> dict[str, object]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     except Exception as exc:  # noqa: BLE001
-        # ── 防御性处理：所有未预期异常均返回合法 error JSON ─────────────
         tb = traceback.format_exc()
         error_msg = f"{type(exc).__name__}: {exc}"
         logger.exception("Pipeline execution failed: %s\nTraceback:\n%s", error_msg, tb)
-
-        # 即使发生未预期异常，也返回一个合法 JSON，防止前端白屏
         raise HTTPException(
             status_code=500,
             detail=(
@@ -216,8 +268,9 @@ async def analyze_room(file: UploadFile = File(...)) -> dict[str, object]:
         ) from exc
 
     finally:
-        if temp_path.exists():
-            temp_path.unlink()
+        for p in temp_paths:
+            if p.exists():
+                p.unlink()
 
 
 if __name__ == "__main__":

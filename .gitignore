@@ -1,17 +1,33 @@
 # Python 缓存
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
 .venv/
 venv/
 env/
 
 # 敏感文件
 .env
+.env.*
+!.env.example
 *.pem
-*.json
+*.key
 cloudflared-*.log
+reasoning_trace.json
 
 # 项目大文件
 static/uploads/*
+uploads/*
 *.png
 *.jpg
+*.jpeg
+*.webp
+
+# IDE 配置
+.vscode/
+.idea/
+
+# Mac 系统文件
+.DS_Store
