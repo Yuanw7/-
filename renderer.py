@@ -7,8 +7,8 @@ Task: 提取家具几何元数据，生成可供交互界面（Fabric.js/Konva�
 Chain-of-Thought (CoT):
 1. 原点对齐：识别房间左下角并定义为 (0,0)
 2. 中心锚定：计算每个家具的几何中心点 (x, y)
-3. 包围盒计算：输出 2D 投影尺寸（宽、深）及离地高度 (z)
-4. 交互预设：为每个物件分配唯一 id，并根据材质预设"碰撞阻力"属性
+3. 包围盒计算：输出 2D 投影尺寸（宽、深）以及离地高度 (z)
+4. 交互预设：为每个物件分配唯一 id
 
 Constraint:
 - 长度单位: mm
@@ -24,36 +24,6 @@ from typing import Any
 from models import GraphState, FurnitureNode
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-# 材质 → 碰撞阻力映射
-# ════════════════════════════════════════════════════════════════════════════════
-
-MATERIAL_COLLISION_RESISTANCE = {
-    # 材质类型: 碰撞阻力等级 (1-10, 越高越"硬")
-    "木质": 6,
-    "实木": 7,
-    "人造板": 5,
-    "金属": 9,
-    "不锈钢": 9,
-    "铝合金": 8,
-    "玻璃": 3,
-    "钢化玻璃": 4,
-    "石材": 8,
-    "大理石": 8,
-    "瓷砖": 7,
-    "陶瓷": 7,
-    "皮革": 2,
-    "布艺": 1,
-    "织物": 1,
-    "塑料": 3,
-    "PVC": 2,
-    "海绵": 1,
-    "床垫": 1,
-    "软垫": 1,
-    "未知": 5,
-}
-
-
 @dataclass
 class RenderObject:
     """可渲染对象"""
@@ -63,7 +33,6 @@ class RenderObject:
     rotation: float  # degrees
     material: str
     label: str
-    collision_resistance: int  # 1-10
     elevation_mm: float  # 离地高度
 
 
@@ -83,7 +52,6 @@ def align_origin(boundary_width_mm: float, boundary_depth_mm: float) -> tuple[fl
     Returns:
         原点偏移量 (origin_x, origin_y) = (0, 0) 房间左下角
     """
-    # 原点定义为房间左下角
     origin_x = 0.0
     origin_y = 0.0
     return origin_x, origin_y
@@ -108,8 +76,6 @@ def calculate_center_anchor(
     """
     cx, cy = furniture.get("center", [0, 0])
 
-    # 坐标转换到原点对齐后的坐标系
-    # 原点已定义为房间左下角，无需额外偏移
     return [
         float(cx - origin_x),
         float(cy - origin_y),
@@ -135,31 +101,6 @@ def calculate_bounding_box(furniture: FurnitureNode) -> list[float]:
     ]
 
 
-def get_collision_resistance(material: str) -> int:
-    """CoT 步骤4: 交互预设 - 碰撞阻力
-
-    根据材质预设碰撞阻力属性
-
-    Args:
-        material: 材质类型
-
-    Returns:
-        碰撞阻力等级 1-10
-    """
-    # 精确匹配
-    if material in MATERIAL_COLLISION_RESISTANCE:
-        return MATERIAL_COLLISION_RESISTANCE[material]
-
-    # 模糊匹配
-    material_lower = material.lower()
-    for key, value in MATERIAL_COLLISION_RESISTANCE.items():
-        if key in material_lower or material_lower in key:
-            return value
-
-    # 默认值
-    return MATERIAL_COLLISION_RESISTANCE.get("未知", 5)
-
-
 # ════════════════════════════════════════════════════════════════════════════════
 # 主渲染函数
 # ════════════════════════════════════════════════════════════════════════════════
@@ -180,7 +121,6 @@ def state_to_render_json(state: GraphState) -> dict[str, Any]:
                 "rotation": float,
                 "material": str,
                 "label": str,
-                "collision_resistance": int,
                 "elevation_mm": float
             }
         ]
@@ -195,36 +135,19 @@ def state_to_render_json(state: GraphState) -> dict[str, Any]:
     boundary = state.get("boundary", {})
     furniture_list = state.get("furniture_list", [])
 
-    # 获取房间尺寸
     room_w = boundary.get("width_mm", 0)
     room_d = boundary.get("depth_mm", 0)
 
-    # CoT 步骤1: 原点对齐
     origin_x, origin_y = align_origin(room_w, room_d)
 
-    # 构建家具列表
     furniture_output = []
 
     for item in furniture_list:
-        # CoT 步骤2: 中心锚定
         center = calculate_center_anchor(item, origin_x, origin_y)
-
-        # CoT 步骤3: 包围盒
         size = calculate_bounding_box(item)
-
-        # 获取旋转角度
         rotation = float(item.get("rotation", 0.0))
-
-        # 获取材质
         material = item.get("material", "未知")
-
-        # CoT 步骤4: 碰撞阻力
-        collision_resistance = get_collision_resistance(material)
-
-        # 获取标签
         label = item.get("label", "未知物品")
-
-        # 获取离地高度
         elevation = float(item.get("elevation_mm", 0.0))
 
         furniture_output.append({
@@ -234,7 +157,6 @@ def state_to_render_json(state: GraphState) -> dict[str, Any]:
             "rotation": rotation,
             "material": material,
             "label": label,
-            "collision_resistance": collision_resistance,
             "elevation_mm": elevation,
         })
 
@@ -267,7 +189,6 @@ def furniture_to_render_object(furniture: FurnitureNode) -> RenderObject:
         rotation=float(furniture.get("rotation", 0.0)),
         material=material,
         label=furniture.get("label", "未知"),
-        collision_resistance=get_collision_resistance(material),
         elevation_mm=float(furniture.get("elevation_mm", 0.0)),
     )
 
@@ -290,7 +211,6 @@ def render_objects_to_json(objects: list[RenderObject]) -> dict[str, Any]:
                 "rotation": obj.rotation,
                 "material": obj.material,
                 "label": obj.label,
-                "collision_resistance": obj.collision_resistance,
                 "elevation_mm": obj.elevation_mm,
             }
             for obj in objects
@@ -353,7 +273,6 @@ def calculate_bbox_from_center(
     """
     w, d, _ = size
 
-    # 计算旋转后的包围盒
     if rotation != 0:
         import math
         rad = math.radians(abs(rotation))
@@ -401,12 +320,10 @@ def generate_fabric_config(obj: RenderObject, scale: float = 1.0) -> dict[str, A
         "selectable": True,
         "hasControls": True,
         "hasBorders": True,
-        # 自定义属性
         "data": {
             "id": obj.id,
             "material": obj.material,
             "label": obj.label,
-            "collision_resistance": obj.collision_resistance,
             "elevation_mm": obj.elevation_mm,
         },
     }
