@@ -507,13 +507,89 @@ result = crop_batch("/path/to/room.jpg", regions)
 
 ---
 
-## 十四、变更记录
+## 十四、Validator Node 校验节点 (2026-05-13 v1.3)
+
+### 14.1 设计目标
+
+在 Multi-Agent 数据流转过程中，对每个 Agent 的输出进行**代码级校验**，确保数据符合约束条件，防止脏数据进入下游流程。
+
+### 14.2 架构定位
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Agent 1    │────▶│  Validator  │────▶│  Agent 2    │
+│  extract    │     │  Node       │     │  audit      │
+└─────────────┘     └─────────────┘     └─────────────┘
+                          │
+                          ▼
+                   ┌─────────────┐
+                   │  校验失败   │
+                   │  → 抛异常   │
+                   └─────────────┘
+```
+
+### 14.3 校验规则
+
+#### Agent 1 校验器 (`validate_agent_1_output`)
+
+| 检查项 | 说明 | 严重性 |
+|--------|------|--------|
+| `boundary_positive` | 房间边界尺寸为正数 | fatal |
+| `furniture_id_unique` | 家具 ID 唯一性 | fatal |
+| `furniture_size_positive` | 家具尺寸为正数 | fatal |
+| `furniture_center_in_bounds` | 中心坐标在房间范围内 | fatal |
+| `furniture_bbox_valid` | BBox 坐标合理 | fatal |
+
+#### Agent 2 校验器 (`validate_agent_2_output`)
+
+| 检查项 | 说明 | 严重性 |
+|--------|------|--------|
+| `audit_field_exists` | 必要字段完整性 | warning |
+| `audit_json_valid` | JSON 解析正确 | fatal |
+| `audit_structure_valid` | 报告结构完整 | fatal |
+
+#### 拓扑校验器 (`validate_topology_matrix`)
+
+| 检查项 | 说明 | 严重性 |
+|--------|------|--------|
+| `topology_not_empty` | 矩阵非空 | fatal |
+| `clearance_non_negative` | 净距值非负 | fatal |
+| `matrix_symmetry` | 矩阵对称性 | warning |
+| `matrix_furniture_consistency` | 与家具列表一致 | fatal |
+
+### 14.4 失败处理策略
+
+| 严重性 | 处理方式 |
+|--------|----------|
+| **fatal** | 抛出 `ValueError`，终止流程 |
+| **warning** | 记录日志，继续执行 |
+
+### 14.5 LangGraph 集成
+
+```python
+# validator_1 校验 Agent 1 输出
+workflow.add_edge("agent_1_extract", "validator_1")
+workflow.add_edge("validator_1", "agent_2_audit")
+
+# validator_2 校验 Agent 2 输出
+workflow.add_edge("agent_2_audit", "validator_2")
+workflow.add_edge("validator_2", "topology_calculate")
+
+# validator_3 校验拓扑矩阵
+workflow.add_edge("topology_calculate", "validator_3")
+workflow.add_edge("validator_3", "agent_3_report")
+```
+
+---
+
+## 十五、变更记录
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
 | 2026-05-13 | v1.0 | 初始架构重构完成 |
 | 2026-05-13 | v1.1 | Agent 2 思维链模式增强：微观特征提取 |
 | 2026-05-13 | v1.2 | Agent 3 无障碍设计审核：拓扑碰撞 + 规范检测 |
+| 2026-05-13 | v1.3 | 新增 Validator Node 校验节点 |
 
 ---
 

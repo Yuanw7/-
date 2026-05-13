@@ -102,6 +102,9 @@ class GraphState(TypedDict):
     final_report: str  # 最终合规报告
     risk_level: Literal["high", "medium", "low", "unknown"]  # 综合风险等级
 
+    # === 校验历史 (Validator Node 记录) ===
+    validation_history: NotRequired[list[dict[str, Any]]]  # 校验历史记录列表
+
 
 # ════════════════════════════════════════════════════════════════════════════════
 # PYDANTIC MODELS — API 序列化 & 外部接口

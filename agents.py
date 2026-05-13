@@ -236,11 +236,11 @@ def calculate_topology(state: GraphState) -> GraphState:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# LangGraph StateGraph 定义
+# LangGraph StateGraph 定义 (含 Validator Node)
 # ════════════════════════════════════════════════════════════════════════════════
 
 def create_compliance_graph() -> StateGraph:
-    """创建适老化合规审查的 LangGraph。
+    """创建适老化合规审查的 LangGraph (含 Validator Node)。
 
     数据流:
     ┌─────────────┐
@@ -250,6 +250,10 @@ def create_compliance_graph() -> StateGraph:
     ┌─────────────┐
     │ agent_1     │ ← 图像输入
     │ extract     │
+    └──────┬──────┘
+           ▼
+    ┌─────────────┐
+    │ validator_1 │ ← 校验 Agent 1 输出
     └──────┬──────┘
            ▼
     ┌─────────────┐
@@ -263,9 +267,17 @@ def create_compliance_graph() -> StateGraph:
     └──────┬──────┘
            ▼
     ┌─────────────┐
+    │ validator_2 │ ← 校验 Agent 2 输出
+    └──────┬──────┘
+           ▼
+    ┌─────────────┐
     │ topology    │ ← 计算边缘净距
     │ calculate   │
     └──────┬─────┘
+           ▼
+    ┌─────────────┐
+    │ validator_3 │ ← 校验拓扑矩阵
+    └──────┬──────┘
            ▼
     ┌─────────────┐
     │ agent_3     │
@@ -275,22 +287,70 @@ def create_compliance_graph() -> StateGraph:
         ┌──────┐
         │ END  │
         └──────┘
+
+    校验失败处理:
+    - fatal 错误 → 抛出异常，终止流程
+    - warning → 记录日志，继续执行
     """
+    from validator import validate_state, ValidationStrategy, format_validation_report
+    import logging
+
+    logger = logging.getLogger("agents")
+
+    def _validator_node(state: GraphState, node_name: str) -> GraphState:
+        """Validator Node 实现"""
+        result = validate_state(state, node_name)
+        action = ValidationStrategy.get_action(result)
+
+        # 记录校验结果
+        report = format_validation_report(result)
+        logger.info(f"Validator after {node_name}:\n{report}")
+
+        # 存储校验结果到 state
+        if "validation_history" not in state:
+            state["validation_history"] = []
+        state["validation_history"].append({
+            "after_node": node_name,
+            "is_valid": result.is_valid,
+            "passed": result.checks_passed,
+            "failed": result.checks_failed,
+            "warnings": result.warnings,
+            "action": action,
+        })
+
+        # fatal 错误 → 抛出异常
+        if action == "retry_agent":
+            failed_checks = ", ".join(result.checks_failed)
+            raise ValueError(
+                f"Fatal validation error after {node_name}: {failed_checks}"
+            )
+
+        return state
+
     workflow = StateGraph(GraphState)
 
-    # 添加节点
+    # 添加 Agent 节点
     workflow.add_node("agent_1_extract", agent_1_extract_vision)
     workflow.add_node("agent_2_audit", agent_2_audit_compliance)
     workflow.add_node("topology_calculate", calculate_topology)
     workflow.add_node("agent_3_report", agent_3_generate_report)
 
+    # 添加 Validator 节点 (使用 partial 绑定 node_name)
+    from functools import partial
+    workflow.add_node("validator_1", partial(_validator_node, node_name="agent_1_extract"))
+    workflow.add_node("validator_2", partial(_validator_node, node_name="agent_2_audit"))
+    workflow.add_node("validator_3", partial(_validator_node, node_name="topology_calculate"))
+
     # 定义边
     workflow.set_entry_point("agent_1_extract")
 
-    # agent_1 → crop → agent_2 → topology → agent_3 → END
-    workflow.add_edge("agent_1_extract", "agent_2_audit")
-    workflow.add_edge("agent_2_audit", "topology_calculate")
-    workflow.add_edge("topology_calculate", "agent_3_report")
+    # agent_1 → validator_1 → crop → agent_2 → validator_2 → topology → validator_3 → agent_3 → END
+    workflow.add_edge("agent_1_extract", "validator_1")
+    workflow.add_edge("validator_1", "agent_2_audit")
+    workflow.add_edge("agent_2_audit", "validator_2")
+    workflow.add_edge("validator_2", "topology_calculate")
+    workflow.add_edge("topology_calculate", "validator_3")
+    workflow.add_edge("validator_3", "agent_3_report")
     workflow.add_edge("agent_3_report", END)
 
     return workflow.compile()
