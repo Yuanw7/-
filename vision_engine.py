@@ -104,74 +104,127 @@ AGENT_1_PROMPT = """【角色】资深建筑测绘工程师
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# Agent 2: 合规审计员
+# Agent 2: 合规审计员 (适老化产品工业设计师与质检员)
+# 思维链模式 (Chain-of-Thought)
 # ════════════════════════════════════════════════════════════════════════════════
 
-AGENT_2_PROMPT = """【角色】极度挑剔的适老化安全审查专家
+AGENT_2_PROMPT = """【角色】适老化产品工业设计师与质检员
 
-【任务】分析局部裁剪图像，评估家具的物理与几何合规性。
+【任务】针对单件家具局部图像，提取微观物理特征，识别潜在安全风险。
 
 【上下文信息】
+- 物件ID: {furniture_id}
 - 家具名称: {furniture_name}
 - 几何中心点: ({center_x}mm, {center_y}mm)
 - 离地高度: {elevation}mm
 - 尺寸: 宽{width}mm × 深{depth}mm × 高{height}mm
 - 主要材质: {material}
-- 表面摩擦等级: {friction_level}
 
-【强制性规范 (必须遵守)】
-{regulation_rules}
+【执行逻辑 — 思维链 (Chain-of-Thought)】
 
-【评估维度 — 逐项检查】
+## 步骤1: 材质预估
+仔细观察表面材质，评估以下指标：
 
-1. 几何边缘审计 (致命项):
-   - 是否存在未经钝化处理的直角/锐角？
-   - R角是否 ≥10mm？（R<10mm 即视为高危）
-   - 尖锐突出物（桌角、扶手端头）是否外露？
+a) 材质类型识别：
+   - 高光瓷砖 → 反光率高，湿滑风险高
+   - 哑光木皮 → 反光率低，摩擦系数适中
+   - 皮革 → 表面光滑，液体渗透后极滑
+   - 布艺/织物 → 摩擦系数高，但可能积灰
+   - 玻璃 → 高反光+透明，误导视弱老人对距离的判断
 
-2. 材质安全性:
-   - 材质是否有阻燃性？（软包/织物类需警惕）
-   - 表面摩擦系数是否足够？（光滑瓷砖/玻璃 → 高危）
-   - 是否存在易碎/锋利材料？
+b) 摩擦系数评估：
+   - high: 粗糙表面、毛毡、防滑纹理
+   - medium: 哑光木、金属拉丝
+   - low: 光滑瓷砖、玻璃、抛光石材
 
-3. 起坐高度 (针对座椅类):
-   - 座面高度是否在 400-500mm 之间？
-   - 过低会导致老人起身困难
-   - 过高会导致老人坐不稳
+c) 二次风险识别：
+   - 玻璃反光 → 误导老人对深度的判断
+   - 光滑金属 → 冬季冰凉触感导致躲避反应
+   - 反光地板 → 强光下形成"水坑"错觉
 
-4. 结构稳固性:
-   - 支撑基面是否足够大？
-   - 抗倾翻能力如何？
-   - 是否有倾倒风险（如高脚柜、未固定的书架）？
+## 步骤2: 几何测算
+寻找边缘特征，利用参照物（插座高度86mm）预估尺度：
 
-5. 通道净距 (结合拓扑数据):
-   - 与相邻家具的边缘净距是否 ≥900mm？
-   - 轮椅转弯半径是否满足？
+a) 边缘类型识别：
+   - 锐角 (R<3mm) → 极高危，划伤风险
+   - 直角 (R=3-10mm) → 高危，撞击伤害
+   - 安全倒角 (R≥10mm) → 低风险，符合规范
 
-【输出格式】返回严格 JSON:
+b) 倒角半径预估：
+   - 寻找已知尺寸参照物（插座86mm）
+   - 比较边缘弯曲程度与参照物比例
+   - 若无法确认是否倒角 → 默认判定为"存在锐角风险"
+
+c) 突出物检测：
+   - 门把手外露角度
+   - 铰链突出量
+   - 装饰性尖角
+
+## 步骤3: 人机工学评估
+针对座椅/床类家具：
+
+a) 座面高度检测：
+   - 标准适老化高度: 400-500mm
+   - 过低 (<400mm) → 起身需大腿发力，老人腿部力量不足
+   - 过高 (>500mm) → 脚悬空，坐不稳易滑落
+
+b) 扶手支撑性：
+   - 扶手高度是否在 650-750mm（便于借力）
+   - 扶手是否前凸（方便站起时抓握）
+
+c) 床垫/坐垫硬度：
+   - 过软 → 起身困难，缺乏支撑
+   - 过硬 → 不舒适，压疮风险
+
+【约束 — 极其挑剔原则】
+1. 若无法确认是否倒角，默认判定为"存在锐角风险"
+2. 玻璃/高光材质必须标注"反光误导风险"
+3. 低于 400mm 的座椅高度直接判定为"高危"
+4. 所有判断必须基于图像证据，无证据则标注"无法确认-存疑"
+
+【输出格式 — 微观特征报告】
 {{
   "furniture_id": "{furniture_id}",
-  "compliance_result": {{
-    "edge_safety": {{
-      "r_corner_safe": true/false,
-      "r_radius_mm": 10,
-      "sharp_protrusions": ["列出所有尖锐突出物"],
-      "severity": "high/medium/low"
+  "micro_features": {{
+    "material_analysis": {{
+      "primary_material": "材质类型",
+      "friction_coefficient": "high/medium/low",
+      "gloss_level": "high/medium/low (光泽度)",
+      "secondary_risks": ["二次风险列表"],
+      "evidence_description": "材质识别依据描述"
     }},
-    "material_safety": {{
-      "fire_retardant": true/false,
-      "friction_adequate": true/false,
-      "fragile_hazard": true/false,
-      "severity": "high/medium/low"
+    "geometry_analysis": {{
+      "corner_type": "锐角/直角/安全倒角/无法确认",
+      "r_corner_radius_mm": "预估倒角半径，若无法确认填 -1",
+      "sharp_protrusions": ["突出物列表"],
+      "edge_condition": "边缘状态描述",
+      "reference_calibration": "参照物校准说明"
     }},
-    "height_appropriate": true/false,
-    "stability_safe": true/false,
-    "clearance_adequate": true/false,
-    "overall_severity": "high/medium/low"
+    "ergonomics_analysis": {{
+      "seat_height_mm": "实测/估算座高，若不适用填 null",
+      "seat_height_compliant": "true/false/null (是否符合 400-500mm)",
+      "armrest_present": true/false,
+      "armrest_height_mm": "扶手高度，若无填 null",
+      "lumbar_support": "有/无/无法确认",
+      "sitting_stability": "稳定/不稳/无法确认"
+    }}
   }},
-  "issues": ["具体问题列表"],
-  "recommendations": ["改进建议列表"]
-}}"""
+  "physical_risk_points": [
+    {{
+      "risk_id": 1,
+      "category": "材质/几何/人机",
+      "severity": "high/medium/low",
+      "description": "风险描述",
+      "evidence": "图像证据",
+      "recommendation": "改进建议"
+    }}
+  ],
+  "summary": "[物件ID] - [材质特征] - [几何特征] - [物理风险点]",
+  "confidence": "high/medium/low (判断置信度)"
+}}
+
+【规范依据】
+{regulation_rules}"""
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -567,14 +620,19 @@ def agent_2_audit_single(
     crop_image_b64: str,
     furniture_node: FurnitureNode,
 ) -> dict[str, Any]:
-    """Agent 2: 对单个家具的裁剪图进行合规审计。
+    """Agent 2: 对单个家具的裁剪图进行微观特征提取与合规审计。
+
+    基于思维链模式 (Chain-of-Thought) 执行：
+    1. 材质预估：识别表面材质，评估摩擦系数和反光率
+    2. 几何测算：寻找边缘特征，预估倒角半径
+    3. 人机工学：评估座椅/床垫离地高度
 
     Args:
         crop_image_b64: 裁剪后的局部图像（Base64）
         furniture_node: 家具节点信息
 
     Returns:
-        审计结果 dict
+        微观特征报告 dict
     """
     client = _create_client()
     center_x, center_y = furniture_node["center"]
@@ -585,12 +643,11 @@ def agent_2_audit_single(
         furniture_name=furniture_node["label"],
         center_x=round(center_x, 1),
         center_y=round(center_y, 1),
-        elevation=0,  # 从 size 中取或单独存储
+        elevation=round(furniture_node.get("elevation_mm", 0), 1),
         width=round(w, 1),
         depth=round(d, 1),
         height=round(h, 1),
         material=furniture_node["material"],
-        friction_level="medium",  # 默认值
         regulation_rules=CHINESE_REGULATION_SYSTEM_RULES,
     )
 
@@ -603,16 +660,42 @@ def agent_2_audit_single(
         logger.warning(f"Agent 2 解析失败 furniture_id={furniture_node['id']}，返回默认值")
         return {
             "furniture_id": furniture_node["id"],
-            "compliance_result": {
-                "edge_safety": {"r_corner_safe": True, "r_radius_mm": 10, "sharp_protrusions": [], "severity": "unknown"},
-                "material_safety": {"fire_retardant": True, "friction_adequate": True, "fragile_hazard": False, "severity": "unknown"},
-                "height_appropriate": True,
-                "stability_safe": True,
-                "clearance_adequate": True,
-                "overall_severity": "unknown",
+            "micro_features": {
+                "material_analysis": {
+                    "primary_material": "无法确认",
+                    "friction_coefficient": "medium",
+                    "gloss_level": "无法确认",
+                    "secondary_risks": ["材质识别失败"],
+                    "evidence_description": "图像解析异常",
+                },
+                "geometry_analysis": {
+                    "corner_type": "无法确认",
+                    "r_corner_radius_mm": -1,
+                    "sharp_protrusions": [],
+                    "edge_condition": "无法确认",
+                    "reference_calibration": "解析异常",
+                },
+                "ergonomics_analysis": {
+                    "seat_height_mm": None,
+                    "seat_height_compliant": None,
+                    "armrest_present": None,
+                    "armrest_height_mm": None,
+                    "lumbar_support": "无法确认",
+                    "sitting_stability": "无法确认",
+                },
             },
-            "issues": [],
-            "recommendations": [],
+            "physical_risk_points": [
+                {
+                    "risk_id": 1,
+                    "category": "系统",
+                    "severity": "unknown",
+                    "description": "微观特征提取失败",
+                    "evidence": "VLM 响应解析异常",
+                    "recommendation": "请重试或检查图像质量",
+                },
+            ],
+            "summary": f"[{furniture_node['id']}] - [材质识别失败] - [几何识别失败] - [提取异常]",
+            "confidence": "low",
         }
 
 

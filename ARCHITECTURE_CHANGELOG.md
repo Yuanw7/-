@@ -340,11 +340,80 @@ result = crop_batch("/path/to/room.jpg", regions)
 
 ---
 
-## 十一、变更记录
+## 十一、Agent 2 思维链模式增强 (2026-05-13 v1.1)
+
+### 11.1 增强内容
+
+**角色升级**: 适老化产品工业设计师与质检员
+
+**执行逻辑 (Chain-of-Thought)**:
+
+| 步骤 | 任务 | 关键指标 |
+|------|------|----------|
+| **步骤1: 材质预估** | 识别表面材质 | 摩擦系数、反光率、二次风险 |
+| **步骤2: 几何测算** | 边缘特征分析 | R角半径、突出物检测 |
+| **步骤3: 人机工学** | 座椅/床评估 | 座面高度、扶手支撑性 |
+
+### 11.2 材质类型识别
+
+| 材质 | 摩擦系数 | 反光率 | 二次风险 |
+|------|----------|--------|----------|
+| 高光瓷砖 | low | high | 湿滑风险高 |
+| 哑光木皮 | medium | low | 低 |
+| 皮革 | low | medium | 液体渗透后极滑 |
+| 布艺/织物 | high | low | 可能积灰 |
+| 玻璃 | low | high | 误导视弱老人深度判断 |
+
+### 11.3 极其挑剔原则
+
+1. 若无法确认是否倒角，默认判定为"存在锐角风险"
+2. 玻璃/高光材质必须标注"反光误导风险"
+3. 低于 400mm 的座椅高度直接判定为"高危"
+4. 所有判断必须基于图像证据，无证据则标注"无法确认-存疑"
+
+### 11.4 输出格式升级
+
+```json
+{
+  "furniture_id": "sofa_1",
+  "micro_features": {
+    "material_analysis": {
+      "primary_material": "皮革",
+      "friction_coefficient": "low",
+      "gloss_level": "medium",
+      "secondary_risks": ["液体渗透后极滑"],
+      "evidence_description": "表面光滑，有皮革纹理"
+    },
+    "geometry_analysis": {
+      "corner_type": "安全倒角",
+      "r_corner_radius_mm": 15,
+      "sharp_protrusions": [],
+      "edge_condition": "边缘圆润",
+      "reference_calibration": "基于插座86mm估算"
+    },
+    "ergonomics_analysis": {
+      "seat_height_mm": 450,
+      "seat_height_compliant": true,
+      "armrest_present": true,
+      "armrest_height_mm": 680,
+      "lumbar_support": "有",
+      "sitting_stability": "稳定"
+    }
+  },
+  "physical_risk_points": [...],
+  "summary": "[sofa_1] - [皮革/低摩擦] - [安全倒角R15] - [液体滑倒风险]",
+  "confidence": "high"
+}
+```
+
+---
+
+## 十二、变更记录
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
 | 2026-05-13 | v1.0 | 初始架构重构完成 |
+| 2026-05-13 | v1.1 | Agent 2 思维链模式增强：微观特征提取 |
 
 ---
 
