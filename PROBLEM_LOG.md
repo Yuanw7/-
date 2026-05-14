@@ -1,5 +1,44 @@
 # 问题日志 (Problem Log)
 
+## 问题 #0: 函数命名不一致 (2026-05-14) - 已解决
+
+**日期**: 2026-05-14
+**状态**: ✓ 已解决
+
+### 问题描述
+版本迭代中函数名称没有全局更新，`main.py` 导入的 `analyze_room_image` 和 `analyze_room_images` 在 `vision_engine.py` 中已重命名为 `agent_1_extract`。
+
+### 根因分析
+- Multi-Agent 架构重构时，将函数重命名为更具语义的名称
+- 但 `main.py` 未同步更新导入语句
+- `agents.py` 和 `api_server.py` 使用新名称，但 `main.py` 使用旧名称
+
+### 涉及文件
+- `vision_engine.py` - 添加兼容性别名
+- `main.py` - 第55行导入语句（无需修改）
+- `test_full_integration.py` - 更新文件列表
+
+### 解决方案
+在 `vision_engine.py` 末尾添加兼容性别名，保持向后兼容：
+
+```python
+def analyze_room_image(image_path: str, calibration_data: dict | None = None) -> GraphState:
+    """【兼容性别名】Agent 1: 从图像提取 BBox"""
+    return agent_1_extract(image_path, calibration_data)
+
+def analyze_room_images(image_paths: list[str], calibration_data: dict | None = None) -> GraphState:
+    """【兼容性别名】Agent 1: 多图提取（取第一张）"""
+    if not image_paths:
+        raise ValueError("image_paths 不能为空")
+    return agent_1_extract(image_paths[0], calibration_data)
+```
+
+### 验证结果
+- ✓ `test_main_api_endpoints`: GET /, GET /health, POST /analyze-room 全部通过
+- ✓ 全局测试: 10/10 项通过
+
+---
+
 ## 问题 #1: 导入 analyze_room_image 函数缺失
 
 **日期**: 2026-05-14

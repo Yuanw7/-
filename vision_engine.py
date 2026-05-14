@@ -773,3 +773,45 @@ async def agent_2_audit_batch_async(
         for img, node in zip(crop_images_b64, furniture_nodes)
     ]
     return await asyncio.gather(*tasks)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 兼容性别名 (向后兼容)
+# ════════════════════════════════════════════════════════════════════════════════
+
+def analyze_room_image(
+    image_path: str,
+    calibration_data: dict | None = None,
+) -> GraphState:
+    """【兼容性别名】Agent 1: 从图像提取 BBox。
+
+    此函数是 `agent_1_extract` 的别名，保持向后兼容。
+
+    Args:
+        image_path: 图片文件路径
+        calibration_data: 校准数据 {"ref_object": str, "ref_size_mm": float}
+
+    Returns:
+        GraphState，包含 furniture_list 和 boundary
+    """
+    return agent_1_extract(image_path, calibration_data)
+
+
+def analyze_room_images(
+    image_paths: list[str],
+    calibration_data: dict | None = None,
+) -> GraphState:
+    """【兼容性别名】Agent 1: 多图提取（取第一张）。
+
+    此函数是 `agent_1_extract` 的别名，多图模式暂时取第一张。
+
+    Args:
+        image_paths: 图片文件路径列表
+        calibration_data: 校准数据
+
+    Returns:
+        GraphState
+    """
+    if not image_paths:
+        raise ValueError("image_paths 不能为空")
+    return agent_1_extract(image_paths[0], calibration_data)

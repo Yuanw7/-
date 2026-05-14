@@ -109,7 +109,8 @@ def test_file_structure():
         "agent_3_engine.py",
         "static/floorplan.html",
         "requirements.txt",
-        "ARCHITECTURE_CHANGELOG.md",
+        "TASK_LOG.md",
+        "PROBLEM_LOG.md",
     ]
 
     results = []
