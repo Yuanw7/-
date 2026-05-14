@@ -25,6 +25,7 @@ colorama>=0.4.6
 # Utilities
 python-dotenv>=1.0.0
 Pillow>=10.2.0
+Shapely>=2.0.0
 
 # Development
 pytest>=8.0.0
